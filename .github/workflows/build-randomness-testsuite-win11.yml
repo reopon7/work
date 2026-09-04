@@ -1,0 +1,63 @@
+name: Build randomness_testsuite Windows EXE
+
+on:
+  push:
+    branches:
+      - build/randomness-testsuite-win11
+  workflow_dispatch:
+
+jobs:
+  build-win11:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Checkout exact upstream source
+        shell: pwsh
+        run: |
+          git clone https://github.com/stevenang/randomness_testsuite.git src
+          cd src
+          git checkout 428f1036b6436fa90896a496528c4f9174befd6d
+
+      - name: Set up Python 3.11 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: requirements-build.txt
+
+      - name: Write build requirements
+        shell: pwsh
+        run: |
+          @'
+          numpy
+          scipy
+          pyinstaller
+          '@ | Set-Content -Encoding ascii requirements-build.txt
+
+      - name: Install dependencies
+        run: python -m pip install -U pip && python -m pip install -r requirements-build.txt
+
+      - name: Build GUI EXE
+        shell: pwsh
+        run: |
+          cd src
+          pyinstaller --noconfirm --clean --onefile --windowed --name NIST_Randomness_Test_Suite Main.py
+
+      - name: Verify PE and hash
+        shell: pwsh
+        run: |
+          $exe = 'src\dist\NIST_Randomness_Test_Suite.exe'
+          if (-not (Test-Path $exe)) { throw 'EXE not produced' }
+          Get-Item $exe | Format-List Name,Length,FullName
+          Get-FileHash $exe -Algorithm SHA256
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: NIST_Randomness_Test_Suite_Windows11_x64
+          path: src/dist/NIST_Randomness_Test_Suite.exe
+          if-no-files-found: error
+          compression-level: 0

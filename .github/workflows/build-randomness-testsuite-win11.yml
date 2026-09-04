@@ -26,28 +26,34 @@ jobs:
           python-version: '3.11'
           architecture: 'x64'
 
-      - name: Apply Windows DPI and layout fixes
-        shell: pwsh
-        run: |
-          python build/randomness_ui_v2/patch_ui.py src
-          python -m py_compile src/Main.py src/GUI.py
-
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install -U pip
           python -m pip install numpy scipy pyinstaller
 
-      - name: Build GUI EXE
+      - name: Apply Vehicle HEX GUI
+        shell: pwsh
+        run: |
+          Copy-Item build/randomness_ui_v3/VehicleHexMain.py src/VehicleHexMain.py -Force
+          python -m py_compile src/VehicleHexMain.py
+          @'
+          0x00 0x11 0x22 0x33 0x44 0x55 0x66 0x77
+          0x88 0x99 0xaa 0xbb 0xcc 0xdd 0xee 0xff
+          '@ | Set-Content -Encoding ascii src/parser_smoke.txt
+          cd src
+          python -c "from VehicleHexMain import parse_hex_seed_file; p=parse_hex_seed_file('parser_smoke.txt'); assert len(p['seeds'])==2; assert len(p['raw_bytes'])==16; assert len(p['bitstream'])==128; assert p['unique_count']==2; print('HEX parser smoke PASS')"
+
+      - name: Build Vehicle HEX GUI EXE
         shell: pwsh
         run: |
           cd src
-          pyinstaller --noconfirm --clean --onefile --windowed --name NIST_Randomness_Test_Suite_Win11_DPI_Fixed Main.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name NIST_Randomness_Test_Suite_Vehicle_HEX VehicleHexMain.py
 
       - name: Verify PE and hash
         shell: pwsh
         run: |
-          $exe = 'src\dist\NIST_Randomness_Test_Suite_Win11_DPI_Fixed.exe'
+          $exe = 'src\dist\NIST_Randomness_Test_Suite_Vehicle_HEX.exe'
           if (-not (Test-Path $exe)) { throw 'EXE not produced' }
           Get-Item $exe | Format-List Name,Length,FullName
           Get-FileHash $exe -Algorithm SHA256
@@ -55,7 +61,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: NIST_Randomness_Test_Suite_Win11_DPI_Fixed
-          path: src/dist/NIST_Randomness_Test_Suite_Win11_DPI_Fixed.exe
+          name: NIST_Randomness_Test_Suite_Vehicle_HEX_Win11_x64
+          path: src/dist/NIST_Randomness_Test_Suite_Vehicle_HEX.exe
           if-no-files-found: error
           compression-level: 0

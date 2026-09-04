@@ -25,20 +25,12 @@ jobs:
         with:
           python-version: '3.11'
           architecture: 'x64'
-          cache: 'pip'
-          cache-dependency-path: requirements-build.txt
-
-      - name: Write build requirements
-        shell: pwsh
-        run: |
-          @'
-          numpy
-          scipy
-          pyinstaller
-          '@ | Set-Content -Encoding ascii requirements-build.txt
 
       - name: Install dependencies
-        run: python -m pip install -U pip && python -m pip install -r requirements-build.txt
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          python -m pip install numpy scipy pyinstaller
 
       - name: Build GUI EXE
         shell: pwsh

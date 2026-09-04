@@ -26,6 +26,12 @@ jobs:
           python-version: '3.11'
           architecture: 'x64'
 
+      - name: Apply Windows DPI and layout fixes
+        shell: pwsh
+        run: |
+          python build/randomness_ui_v2/patch_ui.py src
+          python -m py_compile src/Main.py src/GUI.py
+
       - name: Install dependencies
         shell: pwsh
         run: |
@@ -36,12 +42,12 @@ jobs:
         shell: pwsh
         run: |
           cd src
-          pyinstaller --noconfirm --clean --onefile --windowed --name NIST_Randomness_Test_Suite Main.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name NIST_Randomness_Test_Suite_Win11_DPI_Fixed Main.py
 
       - name: Verify PE and hash
         shell: pwsh
         run: |
-          $exe = 'src\dist\NIST_Randomness_Test_Suite.exe'
+          $exe = 'src\dist\NIST_Randomness_Test_Suite_Win11_DPI_Fixed.exe'
           if (-not (Test-Path $exe)) { throw 'EXE not produced' }
           Get-Item $exe | Format-List Name,Length,FullName
           Get-FileHash $exe -Algorithm SHA256
@@ -49,7 +55,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: NIST_Randomness_Test_Suite_Windows11_x64
-          path: src/dist/NIST_Randomness_Test_Suite.exe
+          name: NIST_Randomness_Test_Suite_Win11_DPI_Fixed
+          path: src/dist/NIST_Randomness_Test_Suite_Win11_DPI_Fixed.exe
           if-no-files-found: error
           compression-level: 0

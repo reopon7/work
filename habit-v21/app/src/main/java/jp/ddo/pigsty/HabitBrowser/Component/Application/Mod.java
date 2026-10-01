@@ -146,10 +146,10 @@ public final class Mod extends App {
             "out.push('url: '+E(location.href));out.push('ua: '+E(navigator.userAgent));" +
             "out.push('video count: '+vs.length);" +
             "var probe=document.createElement('video');" +
-            "out.push('canPlay mp4/h264: '+E(probe.canPlayType('video/mp4; codecs=\\"avc1.42E01E, mp4a.40.2\\"')));" +
-            "out.push('canPlay webm/vp9: '+E(probe.canPlayType('video/webm; codecs=\\"vp9, opus\\"')));" +
+            "out.push('canPlay mp4/h264: '+E(probe.canPlayType('video/mp4')));" +
+            "out.push('canPlay webm/vp9: '+E(probe.canPlayType('video/webm')));" +
             "out.push('canPlay hls: '+E(probe.canPlayType('application/vnd.apple.mpegurl')));" +
-            "var ms='no';try{ms=!!W.MediaSource;if(ms&&MediaSource.isTypeSupported)ms='yes h264='+MediaSource.isTypeSupported('video/mp4; codecs=\\"avc1.42E01E\\"');}catch(e){}out.push('MediaSource: '+E(ms));" +
+            "var ms='no';try{ms=!!W.MediaSource;if(ms&&MediaSource.isTypeSupported)ms='yes h264='+MediaSource.isTypeSupported('video/mp4');}catch(e){}out.push('MediaSource: '+E(ms));" +
             "for(var j=0;j<vs.length;j++){var x=vs[j];var er=x.error;out.push('V'+j+': paused='+x.paused+' rs='+x.readyState+' ns='+x.networkState+' dur='+x.duration+' size='+x.videoWidth+'x'+x.videoHeight+' err='+(er?(er.code+':'+S(er.message)):'none'));out.push('V'+j+' currentSrc: '+E(S(x.currentSrc)));out.push('V'+j+' src: '+E(S(x.getAttribute('src'))));var ss=x.getElementsByTagName('source');for(var k=0;k<ss.length;k++)out.push(' source '+k+': '+E(S(ss[k].src))+' ['+E(S(ss[k].type))+']');}" +
             "var fs=document.getElementsByTagName('iframe');out.push('iframe count: '+fs.length);for(var z=0;z<Math.min(fs.length,8);z++)out.push('F'+z+': '+E(S(fs[z].src)));" +
             "try{var pe=performance.getEntriesByType('resource'),m=[];for(var p=0;p<pe.length;p++){var n=pe[p].name||'',it=pe[p].initiatorType||'';if(/\\.(mp4|m3u8|m4s|ts|webm|mpd)(\\?|$)/i.test(n)||it==='video'||it==='media')m.push(it+' '+n);}out.push('media resources: '+m.length);for(var q=Math.max(0,m.length-8);q<m.length;q++)out.push(E(m[q]));}catch(e){out.push('perf err: '+E(e));}" +

@@ -12,3 +12,5 @@ No V17 method bytecode is patched by this build.
 This is the first migration layer toward a fully reconstructed Java project; it is
 not a claim that all 3,000+ legacy classes have already been restored to original
 Java source.
+
+Build trigger: Java-to-DEX CI enabled.

@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V35 Java compatibility layer.
+ * V38 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -35,7 +35,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V35 import-safe video renderer initialized");
+        Log.i(TAG, "V38 native video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -231,18 +231,41 @@ public final class Mod extends App {
 
                     String url = webView.getUrl();
                     if (url != null && url.contains("etoland.co.kr")) {
-                        // Legacy Habit can still change layer policy while a tab
-                        // lives for a long time. Reassert the V23-proven setting
-                        // immediately before the canvas fallback is installed.
+                        // Imported/legacy timer policy can leave a WebView in a
+                        // paused state even after the preference itself is fixed.
+                        // Explicitly recover the live WebView/timer state.
+                        try { webView.onResume(); } catch (Throwable ignored) {}
+                        try { webView.resumeTimers(); } catch (Throwable ignored) {}
+
+                        WebSettings s = webView.getSettings();
+                        s.setJavaScriptEnabled(true);
+                        s.setDomStorageEnabled(true);
+                        s.setLoadsImagesAutomatically(true);
+                        s.setBlockNetworkImage(false);
+                        s.setBlockNetworkLoads(false);
+                        if (Build.VERSION.SDK_INT >= 21) {
+                            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                        }
+                        if (Build.VERSION.SDK_INT >= 17) {
+                            s.setMediaPlaybackRequiresUserGesture(false);
+                        }
+
+                        // Always use the current System WebView UA on Etoland.
+                        s.setUserAgentString(null);
+
                         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
                         webView.invalidate();
 
-                        webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
-                        webView.evaluateJavascript(NESTED_VIDEO_FALLBACK_JS, null);
-                        nextDelay = 500L;
+                        // V38 no longer depends on the flaky WebView video
+                        // compositor or DOM canvas overlay. A native Android
+                        // VideoView is placed over the site's visible <video>.
+                        NativeVideoOverlay.update(webView);
+                        nextDelay = 250L;
+                    } else {
+                        NativeVideoOverlay.hide(webView);
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V30 video fallback injection failed", t);
+                    Log.e(TAG, "V38 native video loop failed", t);
                 }
 
                 try {

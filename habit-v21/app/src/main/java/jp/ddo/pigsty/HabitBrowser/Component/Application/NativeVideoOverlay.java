@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.media.MediaPlayer;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
@@ -44,22 +45,78 @@ final class NativeVideoOverlay {
     static synchronized void update(final WebView webView) {
         if (webView == null || Build.VERSION.SDK_INT < 19) return;
 
+        if (!isEligible(webView)) {
+            destroy(webView);
+            return;
+        }
+
+        final String expectedUrl = webView.getUrl();
+
         try {
             webView.evaluateJavascript(PROBE_JS, new ValueCallback<String>() {
                 @Override
                 public void onReceiveValue(String value) {
+                    String currentUrl = null;
+                    try { currentUrl = webView.getUrl(); } catch (Throwable ignored) {}
+
+                    // A callback from the old page can arrive after Back/Forward
+                    // navigation. Never let stale probe data resurrect an overlay.
+                    if (!isEligible(webView) ||
+                        expectedUrl == null ||
+                        currentUrl == null ||
+                        !expectedUrl.equals(currentUrl)) {
+                        destroy(webView);
+                        return;
+                    }
+
                     applyProbe(webView, value);
                 }
             });
         } catch (Throwable t) {
             Log.e(TAG, "probe failed", t);
+            destroy(webView);
         }
     }
 
     static synchronized void hide(WebView webView) {
         State state = STATES.get(webView);
-        if (state != null && state.container != null) {
+        if (state == null) return;
+
+        try {
+            if (state.videoView != null && state.videoView.isPlaying()) {
+                state.videoView.pause();
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            if (state.controller != null) {
+                state.controller.hide();
+            }
+        } catch (Throwable ignored) {}
+
+        if (state.container != null) {
             state.container.setVisibility(View.GONE);
+        }
+    }
+
+    static synchronized void hideAll(Activity activity) {
+        if (activity == null) return;
+        for (Map.Entry<WebView, State> entry : STATES.entrySet()) {
+            State state = entry.getValue();
+            if (state != null && state.activity == activity) {
+                hide(entry.getKey());
+            }
+        }
+    }
+
+    static synchronized void destroyAll(Activity activity) {
+        if (activity == null) return;
+        WebView[] views = STATES.keySet().toArray(new WebView[0]);
+        for (WebView view : views) {
+            State state = STATES.get(view);
+            if (state != null && state.activity == activity) {
+                destroy(view);
+            }
         }
     }
 
@@ -80,6 +137,11 @@ final class NativeVideoOverlay {
 
     private static void applyProbe(WebView webView, String value) {
         try {
+            if (!isEligible(webView)) {
+                destroy(webView);
+                return;
+            }
+
             if (value == null || "null".equals(value) || "undefined".equals(value)) {
                 hide(webView);
                 return;
@@ -176,6 +238,14 @@ final class NativeVideoOverlay {
                 } catch (Throwable ignored) {}
             }
 
+            // Navigation/tab switching can happen while MediaPlayer is being
+            // prepared. Re-check immediately before showing the Activity-level
+            // overlay.
+            if (!isEligible(webView)) {
+                destroy(webView);
+                return;
+            }
+
             state.container.setVisibility(View.VISIBLE);
             state.container.bringToFront();
         } catch (Throwable t) {
@@ -189,6 +259,7 @@ final class NativeVideoOverlay {
         final ViewGroup root = (ViewGroup) content;
 
         final State state = new State();
+        state.activity = activity;
         state.root = root;
 
         FrameLayout container = new FrameLayout(activity);
@@ -288,6 +359,30 @@ final class NativeVideoOverlay {
         state.container.setLayoutParams(lp);
     }
 
+    private static boolean isEligible(WebView webView) {
+        try {
+            if (webView == null) return false;
+            if (webView.getParent() == null) return false;
+            if (webView.getWindowToken() == null) return false;
+            if (!webView.isShown()) return false;
+            if (webView.getVisibility() != View.VISIBLE) return false;
+            if (webView.getWindowVisibility() != View.VISIBLE) return false;
+            if (webView.getAlpha() <= 0.01f) return false;
+            if (webView.getWidth() < 2 || webView.getHeight() < 2) return false;
+
+            String url = webView.getUrl();
+            if (url == null || !url.contains("etoland.co.kr")) return false;
+
+            Rect visible = new Rect();
+            if (!webView.getGlobalVisibleRect(visible)) return false;
+            if (visible.width() < 2 || visible.height() < 2) return false;
+
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private static void applyVolume(State state, boolean muted) {
         MediaPlayer mp = state.mediaPlayer;
         if (mp == null) return;
@@ -332,6 +427,7 @@ final class NativeVideoOverlay {
             "})();";
 
     private static final class State {
+        Activity activity;
         ViewGroup root;
         FrameLayout container;
         VideoView videoView;

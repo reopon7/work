@@ -1,0 +1,68 @@
+name: Habit V40 Overlay Lifecycle
+
+on:
+  push:
+    branches:
+      - habit-java-v40-overlay-lifecycle
+    paths:
+      - 'habit-v21/**'
+      - '.github/workflows/habit-v40-overlay-lifecycle.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Locate Android API
+        id: android
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ANDROID_JAR="$(find "$ANDROID_HOME/platforms" -name android.jar | sort -V | tail -1)"
+          test -f "$ANDROID_JAR"
+          echo "android_jar=$ANDROID_JAR" >> "$GITHUB_OUTPUT"
+      - name: Compile
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build/stubs build/app build/tools build/out
+          javac -source 8 -target 8 -cp "${{ steps.android.outputs.android_jar }}" -d build/stubs habit-v21/compile-stubs/jp/ddo/pigsty/HabitBrowser/Component/Application/App.java
+          find habit-v21/app/src/main/java -name '*.java' | sort > build/sources.txt
+          javac -source 8 -target 8 -cp "${{ steps.android.outputs.android_jar }}:build/stubs" -d build/app @build/sources.txt
+          javap -classpath "${{ steps.android.outputs.android_jar }}:build/stubs:build/app" -c -p jp.ddo.pigsty.HabitBrowser.Component.Application.Mod > build/out/Mod.javap.txt
+          javap -classpath "${{ steps.android.outputs.android_jar }}:build/stubs:build/app" -c -p jp.ddo.pigsty.HabitBrowser.Component.Application.NativeVideoOverlay > build/out/NativeVideoOverlay.javap.txt
+      - name: Build dex
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3 https://raw.githubusercontent.com/CYRUS-STUDIO/dex2jar/main/lib/dx-30.0.2.jar -o build/tools/dx.jar
+          java -jar build/tools/dx.jar --dex --min-sdk-version=21 --output=build/out/classes2.dex build/app
+          test -s build/out/classes2.dex
+          sha256sum build/out/classes2.dex | tee build/out/classes2.sha256
+          strings build/out/classes2.dex | grep -E 'V40|destroyAll|hideAll|getGlobalVisibleRect|NativeVideoOverlay|coupang.com|aliexpress.com|etoland.co.kr' > build/out/classes2.strings.txt || true
+          grep -q 'destroyAll' build/out/classes2.strings.txt
+          grep -q 'getGlobalVisibleRect' build/out/classes2.strings.txt
+      - name: Package source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd habit-v21
+          zip -r ../build/out/HABIT_BROWSER_V40_OVERLAY_LIFECYCLE_SOURCE.zip .
+          cd ..
+      - uses: actions/upload-artifact@v4
+        with:
+          name: habit-v40-overlay-lifecycle
+          path: |
+            build/out/classes2.dex
+            build/out/classes2.sha256
+            build/out/classes2.strings.txt
+            build/out/Mod.javap.txt
+            build/out/NativeVideoOverlay.javap.txt
+            build/out/HABIT_BROWSER_V40_OVERLAY_LIFECYCLE_SOURCE.zip
+          if-no-files-found: error

@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V34 Java compatibility layer.
+ * V35 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -33,8 +33,9 @@ public final class Mod extends App {
     @Override
     public void onCreate() {
         super.onCreate();
+        sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V34 clean video renderer initialized");
+        Log.i(TAG, "V35 import-safe video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -48,6 +49,7 @@ public final class Mod extends App {
     }
 
     private static void scheduleApply(Activity activity) {
+        sanitizeLegacyPreferences(true);
         if (activity == null || activity.getWindow() == null) return;
         final View root = activity.getWindow().getDecorView();
         if (root == null) return;
@@ -85,6 +87,13 @@ public final class Mod extends App {
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
 
+            // Very old imported backups can select 2012-2014 UA strings.
+            // Do not let those override a modern System WebView.
+            String ua = settings.getUserAgentString();
+            if (isLegacyImportedUserAgent(ua)) {
+                settings.setUserAgentString(null);
+            }
+
             if (Build.VERSION.SDK_INT >= 17) {
                 settings.setMediaPlaybackRequiresUserGesture(false);
             }
@@ -111,6 +120,82 @@ public final class Mod extends App {
         } catch (Throwable t) {
             Log.e(TAG, "Failed to apply WebView compatibility settings", t);
         }
+    }
+
+    /**
+     * Old Habit backups can carry two rendering/JavaScript options that were
+     * reasonable workarounds on Android 4.x but are actively harmful with a
+     * modern System WebView:
+     *
+     * conf_javascript_safe=true
+     *   -> maps to isStopHeavyJavaScript and schedules WebView.onPause() /
+     *      pauseTimers() shortly after navigation.
+     *
+     * conf_contents_force_draw=true
+     *   -> calls WebView.invalidate() every ~2 s up to ten times after a page
+     *      finishes.
+     *
+     * conf_content_old_video_replace=true
+     *   -> injects the legacy video replacement path.
+     *
+     * V35 neutralizes only these obsolete compatibility toggles. Bookmarks,
+     * gestures, toolbar/layout, search engines and other imported preferences
+     * stay untouched.
+     */
+    private static void sanitizeLegacyPreferences(boolean refreshRuntimeConfig) {
+        boolean changed = false;
+
+        changed |= ensureBooleanPreference("conf_javascript_safe", false);
+        changed |= ensureBooleanPreference("conf_contents_force_draw", false);
+        changed |= ensureBooleanPreference("conf_content_old_video_replace", false);
+
+        if (changed && refreshRuntimeConfig) {
+            refreshLegacyConfig();
+        }
+    }
+
+    private static boolean ensureBooleanPreference(String key, boolean wanted) {
+        try {
+            boolean current = App.getPreferenceBoolean(key, wanted);
+            if (current != wanted) {
+                App.setPreferenceBoolean(key, wanted);
+                Log.i(TAG, "Sanitized imported preference: " + key + "=" + wanted);
+                return true;
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "Preference sanitize failed: " + key, t);
+        }
+        return false;
+    }
+
+    private static void refreshLegacyConfig() {
+        try {
+            Class<?> cls = Class.forName(
+                    "jp.ddo.pigsty.HabitBrowser.Features.Browser.MainController");
+
+            Object existsValue = cls.getMethod("existsInstance").invoke(null);
+            if (!(existsValue instanceof Boolean) || !((Boolean) existsValue)) {
+                return;
+            }
+
+            Object instance = cls.getMethod("getInstance").invoke(null);
+            if (instance != null) {
+                cls.getMethod("applyConfigrationStatus").invoke(instance);
+                Log.i(TAG, "Reloaded legacy configuration after import sanitize");
+            }
+        } catch (Throwable t) {
+            // Startup can legitimately reach this before MainController exists.
+            Log.d(TAG, "Legacy config refresh deferred", t);
+        }
+    }
+
+    private static boolean isLegacyImportedUserAgent(String ua) {
+        if (ua == null) return false;
+        return ua.contains("Android 4.0.1") ||
+               ua.contains("Chrome/18.0.1025") ||
+               ua.contains("Chrome/37.0.2062") ||
+               ua.contains("iPhone OS 8_0_2") ||
+               ua.contains("CPU OS 8_0_2");
     }
 
     private static void startInjectionLoop(final WebView webView) {

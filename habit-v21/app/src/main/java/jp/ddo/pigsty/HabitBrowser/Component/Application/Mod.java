@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V33 Java compatibility layer.
+ * V34 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -34,7 +34,7 @@ public final class Mod extends App {
     public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V33 frame diagnostics initialized");
+        Log.i(TAG, "V34 clean video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -154,7 +154,6 @@ public final class Mod extends App {
 
                         webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
                         webView.evaluateJavascript(NESTED_VIDEO_FALLBACK_JS, null);
-                        webView.evaluateJavascript(FRAME_DIAG_JS, null);
                         nextDelay = 500L;
                     }
                 } catch (Throwable t) {
@@ -454,6 +453,7 @@ public final class Mod extends App {
         "}catch(e){}" +
         "}catch(e){}" +
         "})();";
+    @SuppressWarnings("unused")
     private static final String FRAME_DIAG_JS =
         "(function(){" +
         "try{" +

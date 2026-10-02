@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V38 Java compatibility layer.
+ * V39 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -29,13 +29,15 @@ public final class Mod extends App {
     private static final String TAG = "HabitJavaCompat";
     private static final Map<WebView, Boolean> STARTED =
             Collections.synchronizedMap(new WeakHashMap<WebView, Boolean>());
+    private static final Map<View, Boolean> ROOT_SCANS =
+            Collections.synchronizedMap(new WeakHashMap<View, Boolean>());
 
     @Override
     public void onCreate() {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V38 native video renderer initialized");
+        Log.i(TAG, "V39 import/cache-safe native video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -55,15 +57,46 @@ public final class Mod extends App {
         if (root == null) return;
 
         applyTree(root);
+
+        synchronized (ROOT_SCANS) {
+            if (ROOT_SCANS.containsKey(root)) {
+                return;
+            }
+            ROOT_SCANS.put(root, Boolean.TRUE);
+        }
+
         root.postDelayed(new Runnable() {
-            @Override public void run() { applyTree(root); }
+            @Override public void run() {
+                try {
+                    if (root.getWindowToken() == null) {
+                        synchronized (ROOT_SCANS) {
+                            ROOT_SCANS.remove(root);
+                        }
+                        return;
+                    }
+
+                    // Import can overwrite SharedPreferences while the Browser
+                    // activity stays alive. Re-check continuously instead of
+                    // only at Activity creation/resume.
+                    sanitizeLegacyPreferences(true);
+
+                    // Fast-back/tab cache detaches and later re-attaches
+                    // WebViews. Rescan the live hierarchy so a reused WebView
+                    // gets compatibility settings and its video loop restarted.
+                    applyTree(root);
+                } catch (Throwable t) {
+                    Log.e(TAG, "V39 root compatibility scan failed", t);
+                }
+
+                try {
+                    root.postDelayed(this, 500L);
+                } catch (Throwable ignored) {
+                    synchronized (ROOT_SCANS) {
+                        ROOT_SCANS.remove(root);
+                    }
+                }
+            }
         }, 250L);
-        root.postDelayed(new Runnable() {
-            @Override public void run() { applyTree(root); }
-        }, 1200L);
-        root.postDelayed(new Runnable() {
-            @Override public void run() { applyTree(root); }
-        }, 3000L);
     }
 
     private static void applyTree(View view) {
@@ -265,7 +298,7 @@ public final class Mod extends App {
                         NativeVideoOverlay.hide(webView);
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V38 native video loop failed", t);
+                    Log.e(TAG, "V39 native video loop failed", t);
                 }
 
                 try {

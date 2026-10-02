@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V35 Java compatibility layer.
+ * V36 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -35,7 +35,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V35 import-safe video renderer initialized");
+        Log.i(TAG, "V36 compositor-heartbeat video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -117,6 +117,7 @@ public final class Mod extends App {
             RedirectGuard.install(webView);
 
             startInjectionLoop(webView);
+            startCompositorHeartbeat(webView);
         } catch (Throwable t) {
             Log.e(TAG, "Failed to apply WebView compatibility settings", t);
         }
@@ -196,6 +197,48 @@ public final class Mod extends App {
                ua.contains("Chrome/37.0.2062") ||
                ua.contains("iPhone OS 8_0_2") ||
                ua.contains("CPU OS 8_0_2");
+    }
+
+    /**
+     * V33 showed the video while the diagnostic DOM was being rewritten every
+     * 500 ms. V34/V35 removed that repaint pressure and the gray compositor
+     * failure could return. Keep Android's WebView compositor invalidating at
+     * video cadence only while an Etoland tab is visible.
+     */
+    private static void startCompositorHeartbeat(final WebView webView) {
+        webView.postDelayed(new Runnable() {
+            @Override public void run() {
+                long next = 1000L;
+                try {
+                    if (webView.getParent() == null && webView.getWindowToken() == null) {
+                        return;
+                    }
+
+                    String url = webView.getUrl();
+                    boolean etoland = url != null && url.contains("etoland.co.kr");
+                    boolean visible =
+                            webView.getVisibility() == View.VISIBLE &&
+                            webView.getWindowVisibility() == View.VISIBLE;
+
+                    if (etoland && visible) {
+                        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                        if (Build.VERSION.SDK_INT >= 16) {
+                            webView.postInvalidateOnAnimation();
+                        } else {
+                            webView.invalidate();
+                        }
+                        next = 33L;
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "V36 compositor heartbeat failed", t);
+                }
+
+                try {
+                    webView.postDelayed(this, next);
+                } catch (Throwable ignored) {
+                }
+            }
+        }, 250L);
     }
 
     private static void startInjectionLoop(final WebView webView) {
@@ -358,7 +401,8 @@ public final class Mod extends App {
         "}" +
 
         "function install(v){" +
-        " if(!v||v.__hbV24)return;" +
+        " if(!v)return;" +
+        " if(v.__hbV24&&v.__hbV24Box&&document.documentElement.contains(v.__hbV24Box))return;" +
         " v.__hbV24=1;" +
 
         " var box=document.createElement('div');" +
@@ -372,14 +416,15 @@ public final class Mod extends App {
 
         " box.className='hbv24-box';" +
         " cv.className='hbv24-canvas';" +
+        " v.__hbV24Box=box;v.__hbV24Canvas=cv;" +
         " bar.className='hbv24-bar';" +
         " play.textContent='❚❚';" +
         " mute.textContent=v.muted?'🔇':'🔊';" +
         " fs.textContent='⛶';" +
         " seek.type='range';seek.min='0';seek.max='1000';seek.value='0';" +
 
-        " box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;';" +
-        " cv.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:auto;background:#000;';" +
+        " box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;transform:translateZ(0);will-change:transform;';" +
+        " cv.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:auto;background:#000;transform:translateZ(0);will-change:contents;';" +
         " bar.style.cssText='position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;align-items:center;gap:6px;padding:4px 6px;box-sizing:border-box;background:linear-gradient(transparent,rgba(0,0,0,.82));color:#fff;font:12px sans-serif;pointer-events:auto;';" +
         " play.style.cssText='width:38px;height:34px;background:rgba(0,0,0,.55);color:#fff;border:1px solid #aaa;border-radius:4px;';" +
         " mute.style.cssText=play.style.cssText;" +
@@ -431,7 +476,8 @@ public final class Mod extends App {
 
         " function frame(){" +
         "  try{" +
-        "   if(!document.documentElement.contains(v)){box.remove();return;}" +
+        "   if(!document.documentElement.contains(v)){try{box.remove();}catch(e){}v.__hbV24=0;v.__hbV24Box=null;v.__hbV24Canvas=null;return;}" +
+        "   if(!document.documentElement.contains(box)){document.documentElement.appendChild(box);}" +
         "   place();" +
         "   var r=box.getBoundingClientRect();" +
         "   var dpr=Math.min(2,window.devicePixelRatio||1);" +
@@ -490,16 +536,19 @@ public final class Mod extends App {
         "   ctx.drawImage(v,0,0,sw,sh,dx,dy,dw,dh);" +
         "  }" +
         "  function install(v){" +
-        "   if(!v||v.__hbV32Nested)return;v.__hbV32Nested=1;" +
-        "   var box=d.createElement('div'),cv=d.createElement('canvas');" +
-        "   box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;';" +
-        "   cv.style.cssText='position:absolute;inset:0;width:100%;height:100%;background:#000;pointer-events:auto;display:block;';" +
+        "   if(!v)return;" +
+        "   if(v.__hbV32Nested&&v.__hbV32Box&&d.documentElement.contains(v.__hbV32Box))return;" +
+        "   v.__hbV32Nested=1;" +
+        "   var box=d.createElement('div'),cv=d.createElement('canvas');v.__hbV32Box=box;" +
+        "   box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;transform:translateZ(0);will-change:transform;';" +
+        "   cv.style.cssText='position:absolute;inset:0;width:100%;height:100%;background:#000;pointer-events:auto;display:block;transform:translateZ(0);will-change:contents;';" +
         "   box.appendChild(cv);d.documentElement.appendChild(box);" +
         "   try{v.controls=false;v.style.opacity='0.001';}catch(e){}" +
         "   cv.addEventListener('click',function(){try{if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){});}else v.pause();}catch(e){}},false);" +
         "   function frame(){" +
         "    try{" +
-        "     if(!d.documentElement.contains(v)){box.remove();return;}" +
+        "     if(!d.documentElement.contains(v)){try{box.remove();}catch(e){}v.__hbV32Nested=0;v.__hbV32Box=null;return;}" +
+        "     if(!d.documentElement.contains(box)){d.documentElement.appendChild(box);}" +
         "     var r=v.getBoundingClientRect();" +
         "     var vis=r.width>2&&r.height>2&&r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;" +
         "     box.style.display=vis?'block':'none';" +

@@ -1,0 +1,33 @@
+name: Render Etoland
+
+on:
+  push:
+    branches:
+      - habit-etoland-render-investigation
+    paths:
+      - 'tools/etoland_render_probe.py'
+      - '.github/workflows/render-etoland.yml'
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          python -m playwright install chromium
+      - name: Render target
+        env:
+          TARGET_URL: https://etoland.co.kr/b/etohumor07/view/-9471921
+        run: python tools/etoland_render_probe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etoland-render-probe
+          path: render_probe_out
+          if-no-files-found: error

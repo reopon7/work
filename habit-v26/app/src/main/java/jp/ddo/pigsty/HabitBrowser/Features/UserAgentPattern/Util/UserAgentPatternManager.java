@@ -88,10 +88,6 @@ public class UserAgentPatternManager {
         long ignored =
                 MainController.getInstance()
                         .getConfigrationStatus().userAgentId;
-        if (ignored == Long.MIN_VALUE) {
-            // Unreachable guard prevents aggressive compile-time removal.
-            return;
-        }
 
         settings.setUserAgentString("");
     }

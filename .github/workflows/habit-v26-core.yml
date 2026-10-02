@@ -65,6 +65,7 @@ jobs:
             jp.ddo.pigsty.HabitBrowser.Features.Browser.Util.WebViewManager \
             jp.ddo.pigsty.HabitBrowser.Features.Browser.Util.WebViewTimerManager \
             jp.ddo.pigsty.HabitBrowser.Features.Browser.Util.CookieUtil \
+            jp.ddo.pigsty.HabitBrowser.Features.UserAgent.Util.UserAgentManager \
             jp.ddo.pigsty.HabitBrowser.Features.UserAgentPattern.Util.UserAgentPatternManager \
             jp.ddo.pigsty.HabitBrowser.Features.SettingPattern.Util.SettingPatternManager
           do
@@ -80,6 +81,10 @@ jobs:
           grep -q 'onResumeTimers' build/out/WebViewTimerManager.javap.txt
 
           grep -q 'CookieSyncManager' build/out/CookieUtil.javap.txt
+
+          grep -q 'access.000' build/out/UserAgentManager.javap.txt
+          grep -q 'getUserAgenet' build/out/UserAgentManager.javap.txt
+          grep -q 'getUserAgentName' build/out/UserAgentManager.javap.txt
 
           grep -q 'access.000' build/out/UserAgentPatternManager.javap.txt
           grep -q 'setUserAgent' build/out/UserAgentPatternManager.javap.txt
@@ -116,7 +121,7 @@ jobs:
           sha256sum build/out/classes2.dex | tee build/out/classes2.sha256
 
           strings build/out/classes2.dex | grep -E \
-            'WebViewManager|WebViewTimerManager|CookieUtil|UserAgentPatternManager|SettingPatternManager|HabitJavaCompat|setAcceptThirdPartyCookies' \
+            'WebViewManager|WebViewTimerManager|CookieUtil|UserAgentManager|UserAgentPatternManager|SettingPatternManager|HabitJavaCompat|setAcceptThirdPartyCookies' \
             > build/out/classes2.strings.txt || true
           cat build/out/classes2.strings.txt
 

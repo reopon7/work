@@ -52,3 +52,5 @@ with sync_playwright() as p:
 
 (OUT/"probe.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
 print(json.dumps({"final_url":result.get("final_url"),"frame_count":result.get("frame_count"),"frames":[{"url":f["url"],"videos":len(f["videos"]) if isinstance(f.get("videos"),list) else f.get("videos")} for f in result["frames"]]},ensure_ascii=False,indent=2))
+
+# trigger render workflow

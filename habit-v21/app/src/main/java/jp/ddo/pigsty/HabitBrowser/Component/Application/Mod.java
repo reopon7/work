@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V30 Java compatibility layer.
+ * V31 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -34,7 +34,7 @@ public final class Mod extends App {
     public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V30 persistent canvas video fallback initialized");
+        Log.i(TAG, "V31 video + redirect guard initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -103,6 +103,10 @@ public final class Mod extends App {
             webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             webView.invalidate();
 
+            // Native guard wraps the legacy WebViewClient instead of replacing
+            // its behavior. It blocks only known Coupang/AliExpress hijack URLs.
+            RedirectGuard.install(webView);
+
             startInjectionLoop(webView);
         } catch (Throwable t) {
             Log.e(TAG, "Failed to apply WebView compatibility settings", t);
@@ -132,6 +136,14 @@ public final class Mod extends App {
                         return;
                     }
 
+                    // Re-install if legacy code replaced the WebViewClient
+                    // after Activity creation.
+                    RedirectGuard.install(webView);
+
+                    // JS-side guard catches touch/click/window.open/form/meta
+                    // redirects before native navigation begins.
+                    webView.evaluateJavascript(ANTI_HIJACK_JS, null);
+
                     String url = webView.getUrl();
                     if (url != null && url.contains("etoland.co.kr")) {
                         // Legacy Habit can still change layer policy while a tab
@@ -157,6 +169,59 @@ public final class Mod extends App {
             }
         }, 400L);
     }
+
+    private static final String ANTI_HIJACK_JS =
+        "(function(){" +
+        "try{" +
+        "if(window.__hbV31GuardInstalled)return;" +
+        "window.__hbV31GuardInstalled=1;" +
+        "function blocked(raw){" +
+        " if(!raw)return false;" +
+        " var s=String(raw).toLowerCase();" +
+        " if(s.indexOf('coupang:')===0||s.indexOf('aliexpress:')===0)return true;" +
+        " if(s.indexOf('intent:')===0||s.indexOf('market:')===0){" +
+        "  return s.indexOf('coupang')>=0||s.indexOf('com.coupang.mobile')>=0||s.indexOf('aliexpress')>=0||s.indexOf('com.alibaba.aliexpresshd')>=0;" +
+        " }" +
+        " try{" +
+        "  var u=new URL(raw,document.baseURI),h=(u.hostname||'').toLowerCase();" +
+        "  function hm(root){return h===root||h.slice(-(root.length+1))==='.'+root;}" +
+        "  return hm('coupang.com')||h==='coupang.page.link'||hm('aliexpress.com')||hm('aliexpress.us')||hm('aliexpress.ru')||hm('aliexpress.kr')||h==='ali.pub'||h.slice(-8)==='.ali.pub'||h==='ali.ski'||h.slice(-8)==='.ali.ski';" +
+        " }catch(e){return false;}" +
+        "}" +
+        "function hrefOf(t){" +
+        " while(t&&t!==document){if(t.href)return t.href;t=t.parentNode;}" +
+        " return null;" +
+        "}" +
+        "function stopIfBlocked(e){" +
+        " var h=hrefOf(e.target);" +
+        " if(blocked(h)){e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();return false;}" +
+        "}" +
+        "document.addEventListener('click',stopIfBlocked,true);" +
+        "document.addEventListener('auxclick',stopIfBlocked,true);" +
+        "document.addEventListener('touchend',stopIfBlocked,true);" +
+        "document.addEventListener('submit',function(e){" +
+        " try{var a=e.target&&e.target.action;if(blocked(a)){e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();}}catch(x){}" +
+        "},true);" +
+        "var oldOpen=window.open;" +
+        "window.open=function(u,n,f){" +
+        " if(blocked(u))return null;" +
+        " return oldOpen?oldOpen.call(window,u,n,f):null;" +
+        "};" +
+        "function cleanMeta(){" +
+        " try{" +
+        "  var a=document.querySelectorAll('meta[http-equiv]');" +
+        "  for(var i=0;i<a.length;i++){" +
+        "   var m=a[i],v=(m.getAttribute('http-equiv')||'').toLowerCase();" +
+        "   if(v!=='refresh')continue;" +
+        "   var c=m.getAttribute('content')||'',p=c.toLowerCase().indexOf('url=');" +
+        "   if(p>=0&&blocked(c.slice(p+4).trim()))m.parentNode&&m.parentNode.removeChild(m);" +
+        "  }" +
+        " }catch(e){}" +
+        "}" +
+        "cleanMeta();" +
+        "try{new MutationObserver(cleanMeta).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}" +
+        "}catch(e){}" +
+        "})();";
 
     /**
      * V23 observations on the failing Etoland MP4:

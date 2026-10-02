@@ -16,12 +16,12 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V24 Java compatibility layer.
+ * V30 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
  *
- * V24 adds a canvas-backed HTML5 video renderer fallback for Etoland because
+ * V30 keeps the proven V24 canvas-backed HTML5 video renderer and removes the
  * V23 proved that decode/playback succeeds while the native video compositor
  * still paints a gray rectangle.
  */
@@ -34,7 +34,7 @@ public final class Mod extends App {
     public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V24 canvas video fallback initialized");
+        Log.i(TAG, "V30 persistent canvas video fallback initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -118,26 +118,44 @@ public final class Mod extends App {
         }
 
         webView.postDelayed(new Runnable() {
-            private int remaining = 180;
-
             @Override public void run() {
-                if (remaining-- <= 0) return;
+                long nextDelay = 2000L;
 
                 try {
+                    // Do not keep dead WebViews alive forever. Removing the map
+                    // marker allows a re-attached/recreated WebView to start a
+                    // fresh loop later.
+                    if (webView.getParent() == null && webView.getWindowToken() == null) {
+                        synchronized (STARTED) {
+                            STARTED.remove(webView);
+                        }
+                        return;
+                    }
+
                     String url = webView.getUrl();
                     if (url != null && url.contains("etoland.co.kr")) {
+                        // Legacy Habit can still change layer policy while a tab
+                        // lives for a long time. Reassert the V23-proven setting
+                        // immediately before the canvas fallback is installed.
+                        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                        webView.invalidate();
+
                         webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
+                        nextDelay = 750L;
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V24 video fallback injection failed", t);
+                    Log.e(TAG, "V30 video fallback injection failed", t);
                 }
 
                 try {
-                    webView.postDelayed(this, 1000L);
+                    webView.postDelayed(this, nextDelay);
                 } catch (Throwable ignored) {
+                    synchronized (STARTED) {
+                        STARTED.remove(webView);
+                    }
                 }
             }
-        }, 600L);
+        }, 400L);
     }
 
     /**

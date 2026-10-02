@@ -6,7 +6,7 @@ on:
       - habit-java-v28-core
     paths:
       - 'habit-v26/**'
-      - '.github/workflows/habit-v27-core.yml'
+      - '.github/workflows/habit-v28-core.yml'
   workflow_dispatch:
 
 jobs:

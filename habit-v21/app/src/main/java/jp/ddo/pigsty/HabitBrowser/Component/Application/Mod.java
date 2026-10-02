@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V36 Java compatibility layer.
+ * V37 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -35,7 +35,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V36 compositor-heartbeat video renderer initialized");
+        Log.i(TAG, "V37 JavaScript frame-pump video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -226,6 +226,16 @@ public final class Mod extends App {
                             webView.postInvalidateOnAnimation();
                         } else {
                             webView.invalidate();
+                        }
+
+                        // V33 rendered correctly while evaluateJavascript() was
+                        // being executed repeatedly. V36 only invalidated the
+                        // Android View and was not sufficient. Pump the actual
+                        // canvas draw from Java so it does not depend on
+                        // requestAnimationFrame/timers that legacy Habit can
+                        // pause.
+                        if (Build.VERSION.SDK_INT >= 19) {
+                            webView.evaluateJavascript(VIDEO_FRAME_PUMP_JS, null);
                         }
                         next = 33L;
                     }
@@ -474,9 +484,9 @@ public final class Mod extends App {
         "  box.style.left=r.left+'px';box.style.top=r.top+'px';box.style.width=r.width+'px';box.style.height=r.height+'px';" +
         " }" +
 
-        " function frame(){" +
+        " function drawNow(){" +
         "  try{" +
-        "   if(!document.documentElement.contains(v)){try{box.remove();}catch(e){}v.__hbV24=0;v.__hbV24Box=null;v.__hbV24Canvas=null;return;}" +
+        "   if(!document.documentElement.contains(v)){try{box.remove();}catch(e){}v.__hbV24=0;v.__hbV24Box=null;v.__hbV24Canvas=null;v.__hbV37DrawNow=null;return;}" +
         "   if(!document.documentElement.contains(box)){document.documentElement.appendChild(box);}" +
         "   place();" +
         "   var r=box.getBoundingClientRect();" +
@@ -489,8 +499,9 @@ public final class Mod extends App {
         "   tm.textContent=formatTime(v.currentTime)+' / '+formatTime(v.duration);" +
         "   play.textContent=v.paused?'▶':'❚❚';" +
         "  }catch(e){}" +
-        "  requestAnimationFrame(frame);" +
         " }" +
+        " v.__hbV37DrawNow=drawNow;" +
+        " function frame(){drawNow();requestAnimationFrame(frame);}" +
         " requestAnimationFrame(frame);" +
         "}" +
 
@@ -545,9 +556,9 @@ public final class Mod extends App {
         "   box.appendChild(cv);d.documentElement.appendChild(box);" +
         "   try{v.controls=false;v.style.opacity='0.001';}catch(e){}" +
         "   cv.addEventListener('click',function(){try{if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){});}else v.pause();}catch(e){}},false);" +
-        "   function frame(){" +
+        "   function drawNow(){" +
         "    try{" +
-        "     if(!d.documentElement.contains(v)){try{box.remove();}catch(e){}v.__hbV32Nested=0;v.__hbV32Box=null;return;}" +
+        "     if(!d.documentElement.contains(v)){try{box.remove();}catch(e){}v.__hbV32Nested=0;v.__hbV32Box=null;v.__hbV37NestedDrawNow=null;return;}" +
         "     if(!d.documentElement.contains(box)){d.documentElement.appendChild(box);}" +
         "     var r=v.getBoundingClientRect();" +
         "     var vis=r.width>2&&r.height>2&&r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;" +
@@ -559,8 +570,9 @@ public final class Mod extends App {
         "      if(v.readyState>=2&&v.videoWidth>0)fit(cv.getContext('2d'),v,W,H);" +
         "     }" +
         "    }catch(e){}" +
-        "    w.requestAnimationFrame(frame);" +
         "   }" +
+        "   v.__hbV37NestedDrawNow=drawNow;" +
+        "   function frame(){drawNow();w.requestAnimationFrame(frame);}" +
         "   w.requestAnimationFrame(frame);" +
         "  }" +
         "  function scan(){" +
@@ -587,6 +599,32 @@ public final class Mod extends App {
         "}catch(e){}" +
         "}catch(e){}" +
         "})();";
+    private static final String VIDEO_FRAME_PUMP_JS =
+        "(function(){" +
+        "try{" +
+        " if(window.__hbV24Scan)window.__hbV24Scan();" +
+        " var a=document.getElementsByTagName('video');" +
+        " for(var i=0;i<a.length;i++){var v=a[i];try{if(v.__hbV37DrawNow)v.__hbV37DrawNow();}catch(e){}}" +
+        " try{" +
+        "  var all=document.querySelectorAll('*');" +
+        "  for(var j=0;j<all.length;j++){var sr=all[j].shadowRoot;if(!sr)continue;var sv=sr.querySelectorAll('video');for(var k=0;k<sv.length;k++){try{if(sv[k].__hbV37DrawNow)sv[k].__hbV37DrawNow();}catch(e){}}}" +
+        " }catch(e){}" +
+        " function pump(w){" +
+        "  try{" +
+        "   if(!w||!w.document)return;" +
+        "   var d=w.document,vs=d.getElementsByTagName('video');" +
+        "   for(var x=0;x<vs.length;x++){try{if(vs[x].__hbV37NestedDrawNow)vs[x].__hbV37NestedDrawNow();}catch(e){}}" +
+        "   var fs=d.getElementsByTagName('iframe');" +
+        "   for(var y=0;y<fs.length;y++){try{pump(fs[y].contentWindow);}catch(e){}}" +
+        "  }catch(e){}" +
+        " }" +
+        " try{var fs=document.getElementsByTagName('iframe');for(var z=0;z<fs.length;z++){try{pump(fs[z].contentWindow);}catch(e){}}}catch(e){}" +
+        " var hb=document.getElementById('__hbV37Beat');" +
+        " if(!hb){hb=document.createElement('i');hb.id='__hbV37Beat';hb.style.cssText='position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;opacity:0;pointer-events:none;';document.documentElement.appendChild(hb);}" +
+        " hb.textContent=String((window.__hbV37BeatCount=(window.__hbV37BeatCount||0)+1)&65535);" +
+        "}catch(e){}" +
+        "})();";
+
     @SuppressWarnings("unused")
     private static final String FRAME_DIAG_JS =
         "(function(){" +

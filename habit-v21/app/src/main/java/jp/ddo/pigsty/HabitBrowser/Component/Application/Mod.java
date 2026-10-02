@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V39 Java compatibility layer.
+ * V40 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -37,17 +37,23 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V39 import/cache-safe native video renderer initialized");
+        Log.i(TAG, "V40 overlay lifecycle-safe native video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
         @Override public void onActivityCreated(Activity activity, Bundle state) { scheduleApply(activity); }
         @Override public void onActivityStarted(Activity activity) { scheduleApply(activity); }
         @Override public void onActivityResumed(Activity activity) { scheduleApply(activity); }
-        @Override public void onActivityPaused(Activity activity) {}
-        @Override public void onActivityStopped(Activity activity) {}
+        @Override public void onActivityPaused(Activity activity) {
+            NativeVideoOverlay.hideAll(activity);
+        }
+        @Override public void onActivityStopped(Activity activity) {
+            NativeVideoOverlay.hideAll(activity);
+        }
         @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
-        @Override public void onActivityDestroyed(Activity activity) {}
+        @Override public void onActivityDestroyed(Activity activity) {
+            NativeVideoOverlay.destroyAll(activity);
+        }
     }
 
     private static void scheduleApply(Activity activity) {
@@ -247,7 +253,8 @@ public final class Mod extends App {
                     // Do not keep dead WebViews alive forever. Removing the map
                     // marker allows a re-attached/recreated WebView to start a
                     // fresh loop later.
-                    if (webView.getParent() == null && webView.getWindowToken() == null) {
+                    if (webView.getParent() == null || webView.getWindowToken() == null) {
+                        NativeVideoOverlay.destroy(webView);
                         synchronized (STARTED) {
                             STARTED.remove(webView);
                         }
@@ -295,10 +302,10 @@ public final class Mod extends App {
                         NativeVideoOverlay.update(webView);
                         nextDelay = 250L;
                     } else {
-                        NativeVideoOverlay.hide(webView);
+                        NativeVideoOverlay.destroy(webView);
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V39 native video loop failed", t);
+                    Log.e(TAG, "V40 native video loop failed", t);
                 }
 
                 try {

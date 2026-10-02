@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V31 Java compatibility layer.
+ * V32 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -34,7 +34,7 @@ public final class Mod extends App {
     public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V31 video + redirect guard initialized");
+        Log.i(TAG, "V32 nested-video + redirect guard initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -153,7 +153,8 @@ public final class Mod extends App {
                         webView.invalidate();
 
                         webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
-                        nextDelay = 750L;
+                        webView.evaluateJavascript(NESTED_VIDEO_FALLBACK_JS, null);
+                        nextDelay = 500L;
                     }
                 } catch (Throwable t) {
                     Log.e(TAG, "V30 video fallback injection failed", t);
@@ -365,6 +366,14 @@ public final class Mod extends App {
         "window.__hbV24Scan=function(){" +
         " var a=document.getElementsByTagName('video');" +
         " for(var i=0;i<a.length;i++)install(a[i]);" +
+        " try{" +
+        "  var all=document.querySelectorAll('*');" +
+        "  for(var j=0;j<all.length;j++){" +
+        "   var sr=all[j].shadowRoot;if(!sr)continue;" +
+        "   var sv=sr.querySelectorAll('video');" +
+        "   for(var k=0;k<sv.length;k++)install(sv[k]);" +
+        "  }" +
+        " }catch(e){}" +
         "};" +
         "window.__hbV24Scan();" +
 
@@ -374,4 +383,75 @@ public final class Mod extends App {
 
         "}catch(e){}" +
         "})();";
+    /*
+     * V32: same-origin iframe video fallback.
+     *
+     * Some Etoland posts create the media element inside an iframe instead of
+     * the top document. The V24 renderer only scanned the top document, so
+     * those videos remained gray even though decoding worked.
+     */
+    private static final String NESTED_VIDEO_FALLBACK_JS =
+        "(function(){" +
+        "try{" +
+        "function boot(w){" +
+        " try{" +
+        "  if(!w||!w.document||w.__hbV32FrameInstalled)return;" +
+        "  w.__hbV32FrameInstalled=1;" +
+        "  var d=w.document;" +
+        "  function fit(ctx,v,W,H){" +
+        "   var sw=v.videoWidth||0,sh=v.videoHeight||0;if(sw<1||sh<1)return;" +
+        "   var s=Math.min(W/sw,H/sh),dw=sw*s,dh=sh*s,dx=(W-dw)/2,dy=(H-dh)/2;" +
+        "   ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);" +
+        "   ctx.drawImage(v,0,0,sw,sh,dx,dy,dw,dh);" +
+        "  }" +
+        "  function install(v){" +
+        "   if(!v||v.__hbV32Nested)return;v.__hbV32Nested=1;" +
+        "   var box=d.createElement('div'),cv=d.createElement('canvas');" +
+        "   box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;';" +
+        "   cv.style.cssText='position:absolute;inset:0;width:100%;height:100%;background:#000;pointer-events:auto;display:block;';" +
+        "   box.appendChild(cv);d.documentElement.appendChild(box);" +
+        "   try{v.controls=false;v.style.opacity='0.001';}catch(e){}" +
+        "   cv.addEventListener('click',function(){try{if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){});}else v.pause();}catch(e){}},false);" +
+        "   function frame(){" +
+        "    try{" +
+        "     if(!d.documentElement.contains(v)){box.remove();return;}" +
+        "     var r=v.getBoundingClientRect();" +
+        "     var vis=r.width>2&&r.height>2&&r.bottom>0&&r.right>0&&r.top<w.innerHeight&&r.left<w.innerWidth;" +
+        "     box.style.display=vis?'block':'none';" +
+        "     if(vis){" +
+        "      box.style.left=r.left+'px';box.style.top=r.top+'px';box.style.width=r.width+'px';box.style.height=r.height+'px';" +
+        "      var pr=Math.min(2,w.devicePixelRatio||1),W=Math.max(2,Math.round(r.width*pr)),H=Math.max(2,Math.round(r.height*pr));" +
+        "      if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H;}" +
+        "      if(v.readyState>=2&&v.videoWidth>0)fit(cv.getContext('2d'),v,W,H);" +
+        "     }" +
+        "    }catch(e){}" +
+        "    w.requestAnimationFrame(frame);" +
+        "   }" +
+        "   w.requestAnimationFrame(frame);" +
+        "  }" +
+        "  function scan(){" +
+        "   try{" +
+        "    var a=d.getElementsByTagName('video');for(var i=0;i<a.length;i++)install(a[i]);" +
+        "    var fs=d.getElementsByTagName('iframe');" +
+        "    for(var j=0;j<fs.length;j++){" +
+        "     try{fs[j].setAttribute('allow','autoplay; fullscreen; picture-in-picture');fs[j].setAttribute('allowfullscreen','');}catch(e){}" +
+        "     try{boot(fs[j].contentWindow);}catch(e){}" +
+        "    }" +
+        "   }catch(e){}" +
+        "  }" +
+        "  scan();" +
+        "  try{new w.MutationObserver(scan).observe(d.documentElement,{childList:true,subtree:true});}catch(e){}" +
+        "  w.setInterval(scan,750);" +
+        " }catch(e){}" +
+        "}" +
+        "try{" +
+        " var fs=document.getElementsByTagName('iframe');" +
+        " for(var i=0;i<fs.length;i++){" +
+        "  try{fs[i].setAttribute('allow','autoplay; fullscreen; picture-in-picture');fs[i].setAttribute('allowfullscreen','');}catch(e){}" +
+        "  try{boot(fs[i].contentWindow);}catch(e){}" +
+        " }" +
+        "}catch(e){}" +
+        "}catch(e){}" +
+        "})();";
+
 }

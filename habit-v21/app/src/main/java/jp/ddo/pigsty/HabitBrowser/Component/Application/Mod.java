@@ -16,20 +16,25 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * Java-compiled WebView compatibility + diagnostics layer for the V17 baseline.
+ * V24 Java compatibility layer.
  *
- * No legacy HabitBrowser class bytecode is patched by this class.
+ * Legacy HabitBrowser classes.dex remains untouched.
+ * This class is compiled from Java and added as classes2.dex.
+ *
+ * V24 adds a canvas-backed HTML5 video renderer fallback for Etoland because
+ * V23 proved that decode/playback succeeds while the native video compositor
+ * still paints a gray rectangle.
  */
 public final class Mod extends App {
     private static final String TAG = "HabitJavaCompat";
-    private static final Map<WebView, Boolean> DIAG_STARTED =
+    private static final Map<WebView, Boolean> STARTED =
             Collections.synchronizedMap(new WeakHashMap<WebView, Boolean>());
 
     @Override
     public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V23 Java render diagnostics initialized");
+        Log.i(TAG, "V24 canvas video fallback initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -48,15 +53,12 @@ public final class Mod extends App {
         if (root == null) return;
 
         applyTree(root);
-
         root.postDelayed(new Runnable() {
             @Override public void run() { applyTree(root); }
         }, 250L);
-
         root.postDelayed(new Runnable() {
             @Override public void run() { applyTree(root); }
         }, 1200L);
-
         root.postDelayed(new Runnable() {
             @Override public void run() { applyTree(root); }
         }, 3000L);
@@ -97,80 +99,196 @@ public final class Mod extends App {
                 cookies.setAcceptThirdPartyCookies(webView, true);
             }
 
-            // V23: rule out legacy software-layer rendering. Old Habit Browser can
-            // switch selected content containers between hardware/software layers.
+            // Keep WebView on a hardware layer. V23 confirmed layer=2/hw=true.
             webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
             webView.invalidate();
 
-            final String androidState = "layer=" + webView.getLayerType()
-                    + " hw=" + webView.isHardwareAccelerated();
-            if (Build.VERSION.SDK_INT >= 19) {
-                webView.evaluateJavascript(
-                        "window.__hbAndroidState=" + quoteJs(androidState) + ";", null);
-            }
-
-            startDiagnosticsLoop(webView);
+            startInjectionLoop(webView);
         } catch (Throwable t) {
             Log.e(TAG, "Failed to apply WebView compatibility settings", t);
         }
     }
 
-    private static String quoteJs(String s) {
-        if (s == null) return "''";
-        return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'";
-    }
-
-    private static void startDiagnosticsLoop(final WebView webView) {
+    private static void startInjectionLoop(final WebView webView) {
         if (Build.VERSION.SDK_INT < 19) return;
-        synchronized (DIAG_STARTED) {
-            if (DIAG_STARTED.containsKey(webView)) return;
-            DIAG_STARTED.put(webView, Boolean.TRUE);
+
+        synchronized (STARTED) {
+            if (STARTED.containsKey(webView)) return;
+            STARTED.put(webView, Boolean.TRUE);
         }
 
         webView.postDelayed(new Runnable() {
-            private int remaining = 60;
+            private int remaining = 180;
 
             @Override public void run() {
                 if (remaining-- <= 0) return;
+
                 try {
                     String url = webView.getUrl();
                     if (url != null && url.contains("etoland.co.kr")) {
-                        webView.evaluateJavascript(DIAG_JS, null);
+                        webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "diagnostic injection failed", t);
+                    Log.e(TAG, "V24 video fallback injection failed", t);
                 }
+
                 try {
-                    webView.postDelayed(this, 1500L);
+                    webView.postDelayed(this, 1000L);
                 } catch (Throwable ignored) {
                 }
             }
-        }, 1000L);
+        }, 600L);
     }
 
-    private static final String DIAG_JS =
-            "(function(){try{" +
-            "var W=window;if(!W.__hbv22log)W.__hbv22log=[];" +
-            "function L(x){try{W.__hbv22log.push((new Date()).toLocaleTimeString()+' '+x);if(W.__hbv22log.length>18)W.__hbv22log.shift();}catch(e){}}" +
-            "function S(x){return x==null?'':String(x);}" +
-            "function E(x){return S(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
-            "var vs=document.getElementsByTagName('video');" +
-            "for(var i=0;i<vs.length;i++){var v=vs[i];if(!v.__hbv22){" +
-            "v.__hbv22=1;['error','abort','stalled','suspend','emptied','loadedmetadata','canplay','playing','waiting','pause'].forEach(function(n){v.addEventListener(n,function(ev){var q=ev.currentTarget;L(n+' rs='+q.readyState+' ns='+q.networkState+' err='+(q.error?q.error.code:'0')+' src='+S(q.currentSrc).slice(0,180));},true);});" +
-            "v.addEventListener('click',function(){L('video click rs='+this.readyState+' ns='+this.networkState+' src='+S(this.currentSrc).slice(0,180));},true);" +
-            "}}" +
-            "var out=[];out.push('<b>Habit V23 render diag</b>');" +
-            "out.push('url: '+E(location.href));out.push('ua: '+E(navigator.userAgent));" +
-            "out.push('video count: '+vs.length);out.push('android: '+E(W.__hbAndroidState||''));" +
-            "var probe=document.createElement('video');" +
-            "out.push('canPlay mp4/h264: '+E(probe.canPlayType('video/mp4')));" +
-            "out.push('canPlay webm/vp9: '+E(probe.canPlayType('video/webm')));" +
-            "out.push('canPlay hls: '+E(probe.canPlayType('application/vnd.apple.mpegurl')));" +
-            "var ms='no';try{ms=!!W.MediaSource;if(ms&&MediaSource.isTypeSupported)ms='yes h264='+MediaSource.isTypeSupported('video/mp4');}catch(e){}out.push('MediaSource: '+E(ms));" +
-            "for(var j=0;j<vs.length;j++){var x=vs[j];var er=x.error;var q='';try{var pq=x.getVideoPlaybackQuality?x.getVideoPlaybackQuality():null;if(pq)q=' frames='+pq.totalVideoFrames+' drop='+pq.droppedVideoFrames;}catch(e){}var st='';try{var cs=getComputedStyle(x),r=x.getBoundingClientRect();st=' css='+cs.display+'/'+cs.visibility+' op='+cs.opacity+' filter='+cs.filter+' rect='+Math.round(r.left)+','+Math.round(r.top)+','+Math.round(r.width)+'x'+Math.round(r.height);var el=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);st+=' top='+(el?el.tagName+'.'+S(el.className).slice(0,60):'none');}catch(e){}out.push('V'+j+': paused='+x.paused+' time='+x.currentTime+' rs='+x.readyState+' ns='+x.networkState+' dur='+x.duration+' size='+x.videoWidth+'x'+x.videoHeight+' err='+(er?(er.code+':'+S(er.message)):'none')+q+st);out.push('V'+j+' currentSrc: '+E(S(x.currentSrc)));out.push('V'+j+' poster: '+E(S(x.poster)));out.push('V'+j+' src: '+E(S(x.getAttribute('src'))));var ss=x.getElementsByTagName('source');for(var k=0;k<ss.length;k++)out.push(' source '+k+': '+E(S(ss[k].src))+' ['+E(S(ss[k].type))+']');}" +
-            "var fs=document.getElementsByTagName('iframe');out.push('iframe count: '+fs.length);for(var z=0;z<Math.min(fs.length,8);z++)out.push('F'+z+': '+E(S(fs[z].src)));" +
-            "try{var pe=performance.getEntriesByType('resource'),m=[];for(var p=0;p<pe.length;p++){var n=pe[p].name||'',it=pe[p].initiatorType||'';if(/\\.(mp4|m3u8|m4s|ts|webm|mpd)(\\?|$)/i.test(n)||it==='video'||it==='media')m.push(it+' '+n);}out.push('media resources: '+m.length);for(var q=Math.max(0,m.length-8);q<m.length;q++)out.push(E(m[q]));}catch(e){out.push('perf err: '+E(e));}" +
-            "if(W.__hbv22log.length){out.push('<b>events</b>');for(var r=0;r<W.__hbv22log.length;r++)out.push(E(W.__hbv22log[r]));}" +
-            "var d=document.getElementById('habitV23Diag');if(!d){d=document.createElement('div');d.id='habitV23Diag';d.style.cssText='position:fixed;left:4px;right:4px;bottom:4px;z-index:2147483647;max-height:52vh;overflow:auto;background:rgba(0,0,0,.92);color:#fff;font:10px/1.3 monospace;padding:7px;border:1px solid #777;text-align:left;white-space:normal;';document.documentElement.appendChild(d);}d.innerHTML='<b>Habit V23 render diag</b><br>'+out.join('<br>');if(vs.length){var cv=document.getElementById('habitV23Canvas');if(!cv){cv=document.createElement('canvas');cv.id='habitV23Canvas';cv.width=180;cv.height=180;cv.style.cssText='width:180px;height:180px;border:2px solid red;background:#222;display:block;margin:6px 0;';d.insertBefore(cv,d.firstChild);}try{var cx=cv.getContext('2d');cx.clearRect(0,0,cv.width,cv.height);cx.drawImage(vs[0],0,0,cv.width,cv.height);}catch(e){}}" +
-            "}catch(e){}})();";
+    /**
+     * V23 observations on the failing Etoland MP4:
+     * - readyState=4
+     * - networkState=1
+     * - paused=false
+     * - currentTime increases
+     * - decoded frames increase, droppedFrames=0
+     * - drawImage(video -> canvas) renders correct frames
+     * - native <video> rectangle itself remains gray
+     *
+     * Therefore V24 keeps the original video as the decoder/audio source,
+     * makes its broken visual output transparent, and mirrors decoded frames
+     * into a DOM canvas positioned exactly over the video rectangle.
+     *
+     * A small custom control bar is provided because native video controls
+     * would otherwise be hidden together with the broken compositor surface.
+     */
+    private static final String CANVAS_VIDEO_FALLBACK_JS =
+        "(function(){" +
+        "try{" +
+        "if(window.__hbV24Installed){window.__hbV24Scan&&window.__hbV24Scan();return;}" +
+        "window.__hbV24Installed=1;" +
+
+        "function clamp(v,a,b){return Math.max(a,Math.min(b,v));}" +
+
+        "function formatTime(s){" +
+        " if(!isFinite(s)||s<0)return '0:00';" +
+        " s=Math.floor(s);var m=Math.floor(s/60),x=s%60;" +
+        " return m+':' +(x<10?'0':'')+x;" +
+        "}" +
+
+        "function drawContain(ctx,v,w,h){" +
+        " var sw=v.videoWidth||1,sh=v.videoHeight||1;" +
+        " if(sw<=0||sh<=0)return;" +
+        " var fit='contain';" +
+        " try{fit=getComputedStyle(v).objectFit||'contain';}catch(e){}" +
+        " var sx=0,sy=0,sdw=sw,sdh=sh,dx=0,dy=0,dw=w,dh=h;" +
+        " if(fit==='cover'){" +
+        "  var sr=sw/sh,dr=w/h;" +
+        "  if(sr>dr){sdw=sh*dr;sx=(sw-sdw)/2;}else{sdh=sw/dr;sy=(sh-sdh)/2;}" +
+        " }else if(fit!=='fill'){" +
+        "  var scale=Math.min(w/sw,h/sh);" +
+        "  dw=sw*scale;dh=sh*scale;dx=(w-dw)/2;dy=(h-dh)/2;" +
+        " }" +
+        " ctx.fillStyle='#000';ctx.fillRect(0,0,w,h);" +
+        " ctx.drawImage(v,sx,sy,sdw,sdh,dx,dy,dw,dh);" +
+        "}" +
+
+        "function install(v){" +
+        " if(!v||v.__hbV24)return;" +
+        " v.__hbV24=1;" +
+
+        " var box=document.createElement('div');" +
+        " var cv=document.createElement('canvas');" +
+        " var bar=document.createElement('div');" +
+        " var play=document.createElement('button');" +
+        " var seek=document.createElement('input');" +
+        " var tm=document.createElement('span');" +
+        " var mute=document.createElement('button');" +
+        " var fs=document.createElement('button');" +
+
+        " box.className='hbv24-box';" +
+        " cv.className='hbv24-canvas';" +
+        " bar.className='hbv24-bar';" +
+        " play.textContent='❚❚';" +
+        " mute.textContent=v.muted?'🔇':'🔊';" +
+        " fs.textContent='⛶';" +
+        " seek.type='range';seek.min='0';seek.max='1000';seek.value='0';" +
+
+        " box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;';" +
+        " cv.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:auto;background:#000;';" +
+        " bar.style.cssText='position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;align-items:center;gap:6px;padding:4px 6px;box-sizing:border-box;background:linear-gradient(transparent,rgba(0,0,0,.82));color:#fff;font:12px sans-serif;pointer-events:auto;';" +
+        " play.style.cssText='width:38px;height:34px;background:rgba(0,0,0,.55);color:#fff;border:1px solid #aaa;border-radius:4px;';" +
+        " mute.style.cssText=play.style.cssText;" +
+        " fs.style.cssText=play.style.cssText;" +
+        " seek.style.cssText='flex:1;min-width:60px;';" +
+        " tm.style.cssText='min-width:78px;text-align:center;color:#fff;text-shadow:0 1px 2px #000;';" +
+
+        " bar.appendChild(play);bar.appendChild(seek);bar.appendChild(tm);bar.appendChild(mute);bar.appendChild(fs);" +
+        " box.appendChild(cv);box.appendChild(bar);document.documentElement.appendChild(box);" +
+
+        " try{v.controls=false;}catch(e){}" +
+        " v.style.opacity='0.001';" +
+
+        " function toggle(){" +
+        "  if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){});}else{v.pause();}" +
+        " }" +
+        " cv.addEventListener('click',toggle,false);" +
+        " play.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();toggle();},false);" +
+        " mute.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();v.muted=!v.muted;mute.textContent=v.muted?'🔇':'🔊';},false);" +
+
+        " var seeking=0;" +
+        " seek.addEventListener('touchstart',function(){seeking=1;},false);" +
+        " seek.addEventListener('mousedown',function(){seeking=1;},false);" +
+        " seek.addEventListener('input',function(){if(isFinite(v.duration)&&v.duration>0)v.currentTime=(Number(seek.value)/1000)*v.duration;},false);" +
+        " seek.addEventListener('change',function(){seeking=0;},false);" +
+        " seek.addEventListener('touchend',function(){seeking=0;},false);" +
+        " seek.addEventListener('mouseup',function(){seeking=0;},false);" +
+
+        " fs.addEventListener('click',function(e){" +
+        "  e.preventDefault();e.stopPropagation();" +
+        "  try{" +
+        "   if(document.fullscreenElement===box){document.exitFullscreen&&document.exitFullscreen();}" +
+        "   else if(box.requestFullscreen){box.requestFullscreen();}" +
+        "   else if(box.webkitRequestFullscreen){box.webkitRequestFullscreen();}" +
+        "  }catch(x){}" +
+        " },false);" +
+
+        " function place(){" +
+        "  var full=(document.fullscreenElement===box)||(document.webkitFullscreenElement===box);" +
+        "  if(full){" +
+        "   box.style.left='0';box.style.top='0';box.style.width='100vw';box.style.height='100vh';box.style.display='block';return;" +
+        "  }" +
+        "  var r=v.getBoundingClientRect();" +
+        "  var visible=r.width>2&&r.height>2&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;" +
+        "  box.style.display=visible?'block':'none';" +
+        "  if(!visible)return;" +
+        "  box.style.left=r.left+'px';box.style.top=r.top+'px';box.style.width=r.width+'px';box.style.height=r.height+'px';" +
+        " }" +
+
+        " function frame(){" +
+        "  try{" +
+        "   if(!document.documentElement.contains(v)){box.remove();return;}" +
+        "   place();" +
+        "   var r=box.getBoundingClientRect();" +
+        "   var dpr=Math.min(2,window.devicePixelRatio||1);" +
+        "   var w=Math.max(2,Math.round(r.width*dpr)),h=Math.max(2,Math.round(r.height*dpr));" +
+        "   if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}" +
+        "   var ctx=cv.getContext('2d');" +
+        "   if(v.readyState>=2&&v.videoWidth>0){drawContain(ctx,v,w,h);}" +
+        "   if(!seeking&&isFinite(v.duration)&&v.duration>0)seek.value=String(Math.round((v.currentTime/v.duration)*1000));" +
+        "   tm.textContent=formatTime(v.currentTime)+' / '+formatTime(v.duration);" +
+        "   play.textContent=v.paused?'▶':'❚❚';" +
+        "  }catch(e){}" +
+        "  requestAnimationFrame(frame);" +
+        " }" +
+        " requestAnimationFrame(frame);" +
+        "}" +
+
+        "window.__hbV24Scan=function(){" +
+        " var a=document.getElementsByTagName('video');" +
+        " for(var i=0;i<a.length;i++)install(a[i]);" +
+        "};" +
+        "window.__hbV24Scan();" +
+
+        "try{" +
+        " new MutationObserver(function(){window.__hbV24Scan();}).observe(document.documentElement,{childList:true,subtree:true});" +
+        "}catch(e){}" +
+
+        "}catch(e){}" +
+        "})();";
 }

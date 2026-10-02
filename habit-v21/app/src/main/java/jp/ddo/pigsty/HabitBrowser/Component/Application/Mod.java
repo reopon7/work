@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V32 Java compatibility layer.
+ * V33 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -34,7 +34,7 @@ public final class Mod extends App {
     public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V32 nested-video + redirect guard initialized");
+        Log.i(TAG, "V33 frame diagnostics initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -154,6 +154,7 @@ public final class Mod extends App {
 
                         webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
                         webView.evaluateJavascript(NESTED_VIDEO_FALLBACK_JS, null);
+                        webView.evaluateJavascript(FRAME_DIAG_JS, null);
                         nextDelay = 500L;
                     }
                 } catch (Throwable t) {
@@ -453,5 +454,25 @@ public final class Mod extends App {
         "}catch(e){}" +
         "}catch(e){}" +
         "})();";
+    private static final String FRAME_DIAG_JS =
+        "(function(){" +
+        "try{" +
+        "function S(v){return v==null?'':String(v);}" +
+        "function E(v){return S(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
+        "function R(el){try{var r=el.getBoundingClientRect();return Math.round(r.left)+','+Math.round(r.top)+','+Math.round(r.width)+'x'+Math.round(r.height);}catch(e){return '?';}}" +
+        "var out=[];out.push('<b>Habit V33 frame diag</b>');out.push('url: '+E(location.href));" +
+        "var vs=document.getElementsByTagName('video');out.push('top videos: '+vs.length);" +
+        "for(var i=0;i<vs.length;i++){var v=vs[i];out.push('V'+i+' rect='+R(v)+' rs='+v.readyState+' ns='+v.networkState+' paused='+v.paused+' size='+v.videoWidth+'x'+v.videoHeight+' src='+E(v.currentSrc||v.src));}" +
+        "var fs=document.getElementsByTagName('iframe');out.push('iframes: '+fs.length);" +
+        "for(var j=0;j<fs.length;j++){var f=fs[j],same='?';var vc='?';try{var d=f.contentDocument;if(d){same='YES';vc=d.getElementsByTagName('video').length;}else same='NO';}catch(e){same='CROSS';}out.push('F'+j+' '+same+' videos='+vc+' rect='+R(f)+' allow='+E(f.getAttribute('allow'))+' src='+E(f.src));}" +
+        "var os=document.querySelectorAll('object,embed');out.push('object/embed: '+os.length);" +
+        "for(var k=0;k<os.length;k++){var o=os[k];out.push(o.tagName+k+' rect='+R(o)+' type='+E(o.type)+' src='+E(o.src||o.data));}" +
+        "var cs=document.getElementsByTagName('canvas');out.push('canvas: '+cs.length);for(var q=0;q<Math.min(cs.length,12);q++)out.push('C'+q+' rect='+R(cs[q])+' size='+cs[q].width+'x'+cs[q].height);" +
+        "try{var all=document.querySelectorAll('body *'),large=[];for(var a=0;a<all.length;a++){var x=all[a],r=x.getBoundingClientRect();if(r.width>280&&r.height>140){var st=getComputedStyle(x),bg=st.backgroundColor;if(bg&&bg!=='rgba(0, 0, 0, 0)'&&bg!=='transparent'){large.push(x.tagName+'.'+S(x.className).slice(0,45)+' rect='+R(x)+' bg='+bg);if(large.length>=10)break;}}}out.push('<b>large bg elements</b>');for(var b=0;b<large.length;b++)out.push(E(large[b]));}catch(e){}" +
+        "try{var pe=performance.getEntriesByType('resource'),m=[];for(var p=0;p<pe.length;p++){var n=pe[p].name||'',it=pe[p].initiatorType||'';if(/(mp4|m3u8|m4s|webm|mpd|video|player|embed)/i.test(n)||it==='video'||it==='media'||it==='iframe')m.push(it+' '+n);}out.push('<b>media/frame resources '+m.length+'</b>');for(var t=Math.max(0,m.length-15);t<m.length;t++)out.push(E(m[t]));}catch(e){}" +
+        "var d=document.getElementById('hbV33Diag');if(!d){d=document.createElement('div');d.id='hbV33Diag';d.style.cssText='position:fixed;left:4px;right:4px;bottom:4px;z-index:2147483647;max-height:55vh;overflow:auto;background:rgba(0,0,0,.94);color:#fff;font:10px/1.3 monospace;padding:7px;border:1px solid #888;text-align:left;';document.documentElement.appendChild(d);}d.innerHTML=out.join('<br>');" +
+        "}catch(e){}" +
+        "})();";
+
 
 }

@@ -56,13 +56,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          javap -classpath "${{ steps.android.outputs.android_jar }}:build/stubs:build/app" \
+          javap -classpath "${{ steps.android.outputs.android_jar }}:build/app:build/stubs" \
             -c -p -s jp.ddo.pigsty.HabitBrowser.Features.Browser.Util.WebViewManager \
             > build/out/WebViewManager.javap.txt
-          javap -classpath "${{ steps.android.outputs.android_jar }}:build/stubs:build/app" \
+          javap -classpath "${{ steps.android.outputs.android_jar }}:build/app:build/stubs" \
             -c -p -s jp.ddo.pigsty.HabitBrowser.Features.Browser.Model.WebViewData \
             > build/out/WebViewData.javap.txt
-          javap -classpath "${{ steps.android.outputs.android_jar }}:build/stubs:build/app" \
+          javap -classpath "${{ steps.android.outputs.android_jar }}:build/app:build/stubs" \
             -c -p -s 'jp.ddo.pigsty.HabitBrowser.Features.Browser.Model.WebViewData$1' \
             > build/out/WebViewDataCreator.javap.txt
           grep -q 'createWebViewData' build/out/WebViewManager.javap.txt

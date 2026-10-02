@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V40 Java compatibility layer.
+ * V41 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -37,7 +37,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V40 overlay lifecycle-safe native video renderer initialized");
+        Log.i(TAG, "V41 texture-video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -305,7 +305,7 @@ public final class Mod extends App {
                         NativeVideoOverlay.destroy(webView);
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V40 native video loop failed", t);
+                    Log.e(TAG, "V41 native video loop failed", t);
                 }
 
                 try {

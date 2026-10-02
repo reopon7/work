@@ -4,5 +4,5 @@ public class TabClient {
     public boolean isRestore;
     public long getTabId() { return 0L; }
     public HabitWebView getWebView() { return null; }
-    public boolean isClosed() { return false; }
+    public boolean isClosed() { return false; }\n    public String getForceUA() { return null; }
 }

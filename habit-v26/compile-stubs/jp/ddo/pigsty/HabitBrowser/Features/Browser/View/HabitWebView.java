@@ -17,5 +17,5 @@ public class HabitWebView extends WebView {
     public String getPageTitle() { return null; }
     public void setSettingPatternInfo(SettingPatternInfo info) {}
     public void doPause() {}
-    public void doResume() {}
+    public void doResume() {}\n    public TabClient getTab() { return null; }
 }

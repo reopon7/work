@@ -508,15 +508,26 @@ public class WebViewManager implements IManager {
                 final HabitWebView web =
                         (HabitWebView) it.next();
 
-                App.getHandler().post(new Runnable() {
-                    @Override public void run() {
-                        removeWebView(web, true, false);
-                    }
-                });
+                App.getHandler().post(new RemoveTabRunnable(this, web));
             }
         }
 
         webViewDataMap.remove(Long.valueOf(tabId));
+    }
+
+    private static final class RemoveTabRunnable implements Runnable {
+        private final WebViewManager owner;
+        private final HabitWebView web;
+
+        RemoveTabRunnable(WebViewManager owner, HabitWebView web) {
+            this.owner = owner;
+            this.web = web;
+        }
+
+        @Override
+        public void run() {
+            owner.removeWebView(web, true, false);
+        }
     }
 
     public void setNetworkSettings(boolean enabled) {

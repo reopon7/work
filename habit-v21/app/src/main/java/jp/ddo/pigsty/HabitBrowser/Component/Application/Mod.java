@@ -2,39 +2,69 @@ package jp.ddo.pigsty.HabitBrowser.Component.Application;
 
 import android.app.Activity;
 import android.app.Application;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V24 Java compatibility layer.
+ * V25 stabilization layer for the V17 Habit Browser baseline.
  *
- * Legacy HabitBrowser classes.dex remains untouched.
- * This class is compiled from Java and added as classes2.dex.
- *
- * V24 adds a canvas-backed HTML5 video renderer fallback for Etoland because
- * V23 proved that decode/playback succeeds while the native video compositor
- * still paints a gray rectangle.
+ * Legacy classes.dex is kept byte-for-byte unchanged. All new behavior is
+ * compiled from Java into classes2.dex.
  */
 public final class Mod extends App {
     private static final String TAG = "HabitJavaCompat";
+    private static final String VIDEO_FALLBACK_ASSET =
+            "js/habit_video_canvas_fallback_v25.js";
+
     private static final Map<WebView, Boolean> STARTED =
             Collections.synchronizedMap(new WeakHashMap<WebView, Boolean>());
+
+    private static volatile String videoFallbackScript;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        videoFallbackScript = readAsset(VIDEO_FALLBACK_ASSET);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V24 canvas video fallback initialized");
+        Log.i(TAG, "V25 stable compatibility layer initialized");
+    }
+
+    private String readAsset(String path) {
+        StringBuilder out = new StringBuilder(16384);
+        InputStream input = null;
+        BufferedReader reader = null;
+        try {
+            input = getAssets().open(path);
+            reader = new BufferedReader(new InputStreamReader(input, "UTF-8"));
+            char[] buffer = new char[4096];
+            int count;
+            while ((count = reader.read(buffer)) >= 0) {
+                out.append(buffer, 0, count);
+            }
+            return out.toString();
+        } catch (Throwable t) {
+            Log.e(TAG, "Unable to load " + path, t);
+            return null;
+        } finally {
+            try { if (reader != null) reader.close(); } catch (Throwable ignored) {}
+            try { if (input != null) input.close(); } catch (Throwable ignored) {}
+        }
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -89,6 +119,7 @@ public final class Mod extends App {
                 settings.setMediaPlaybackRequiresUserGesture(false);
             }
 
+            // Preserve the compatibility behavior of the working V17/V24 line.
             if (Build.VERSION.SDK_INT >= 21) {
                 settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
             }
@@ -99,13 +130,21 @@ public final class Mod extends App {
                 cookies.setAcceptThirdPartyCookies(webView, true);
             }
 
-            // Keep WebView on a hardware layer. V23 confirmed layer=2/hw=true.
-            webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-            webView.invalidate();
-
             startInjectionLoop(webView);
         } catch (Throwable t) {
             Log.e(TAG, "Failed to apply WebView compatibility settings", t);
+        }
+    }
+
+    private static boolean isEtolandUrl(String url) {
+        if (url == null || url.length() == 0) return false;
+        try {
+            String host = Uri.parse(url).getHost();
+            if (host == null) return false;
+            host = host.toLowerCase(Locale.US);
+            return "etoland.co.kr".equals(host) || host.endsWith(".etoland.co.kr");
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -118,177 +157,41 @@ public final class Mod extends App {
         }
 
         webView.postDelayed(new Runnable() {
-            private int remaining = 180;
-
             @Override public void run() {
-                if (remaining-- <= 0) return;
-
                 try {
+                    // A WebView removed from the view hierarchy should not be kept alive
+                    // by this compatibility task.
+                    if (webView.getParent() == null && webView.getWindowToken() == null) {
+                        synchronized (STARTED) { STARTED.remove(webView); }
+                        return;
+                    }
+
                     String url = webView.getUrl();
-                    if (url != null && url.contains("etoland.co.kr")) {
-                        webView.evaluateJavascript(CANVAS_VIDEO_FALLBACK_JS, null);
+                    if (isEtolandUrl(url) && videoFallbackScript != null) {
+                        webView.evaluateJavascript(
+                                "(function(){return !!window.__hbV25Installed;})()",
+                                new ValueCallback<String>() {
+                                    @Override public void onReceiveValue(String value) {
+                                        if (!"true".equals(value)) {
+                                            try {
+                                                webView.evaluateJavascript(videoFallbackScript, null);
+                                            } catch (Throwable t) {
+                                                Log.e(TAG, "V25 video fallback injection failed", t);
+                                            }
+                                        }
+                                    }
+                                });
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V24 video fallback injection failed", t);
+                    Log.e(TAG, "V25 compatibility loop failed", t);
                 }
 
                 try {
-                    webView.postDelayed(this, 1000L);
+                    webView.postDelayed(this, 1500L);
                 } catch (Throwable ignored) {
+                    synchronized (STARTED) { STARTED.remove(webView); }
                 }
             }
-        }, 600L);
+        }, 500L);
     }
-
-    /**
-     * V23 observations on the failing Etoland MP4:
-     * - readyState=4
-     * - networkState=1
-     * - paused=false
-     * - currentTime increases
-     * - decoded frames increase, droppedFrames=0
-     * - drawImage(video -> canvas) renders correct frames
-     * - native <video> rectangle itself remains gray
-     *
-     * Therefore V24 keeps the original video as the decoder/audio source,
-     * makes its broken visual output transparent, and mirrors decoded frames
-     * into a DOM canvas positioned exactly over the video rectangle.
-     *
-     * A small custom control bar is provided because native video controls
-     * would otherwise be hidden together with the broken compositor surface.
-     */
-    private static final String CANVAS_VIDEO_FALLBACK_JS =
-        "(function(){" +
-        "try{" +
-        "if(window.__hbV24Installed){window.__hbV24Scan&&window.__hbV24Scan();return;}" +
-        "window.__hbV24Installed=1;" +
-
-        "function clamp(v,a,b){return Math.max(a,Math.min(b,v));}" +
-
-        "function formatTime(s){" +
-        " if(!isFinite(s)||s<0)return '0:00';" +
-        " s=Math.floor(s);var m=Math.floor(s/60),x=s%60;" +
-        " return m+':' +(x<10?'0':'')+x;" +
-        "}" +
-
-        "function drawContain(ctx,v,w,h){" +
-        " var sw=v.videoWidth||1,sh=v.videoHeight||1;" +
-        " if(sw<=0||sh<=0)return;" +
-        " var fit='contain';" +
-        " try{fit=getComputedStyle(v).objectFit||'contain';}catch(e){}" +
-        " var sx=0,sy=0,sdw=sw,sdh=sh,dx=0,dy=0,dw=w,dh=h;" +
-        " if(fit==='cover'){" +
-        "  var sr=sw/sh,dr=w/h;" +
-        "  if(sr>dr){sdw=sh*dr;sx=(sw-sdw)/2;}else{sdh=sw/dr;sy=(sh-sdh)/2;}" +
-        " }else if(fit!=='fill'){" +
-        "  var scale=Math.min(w/sw,h/sh);" +
-        "  dw=sw*scale;dh=sh*scale;dx=(w-dw)/2;dy=(h-dh)/2;" +
-        " }" +
-        " ctx.fillStyle='#000';ctx.fillRect(0,0,w,h);" +
-        " ctx.drawImage(v,sx,sy,sdw,sdh,dx,dy,dw,dh);" +
-        "}" +
-
-        "function install(v){" +
-        " if(!v||v.__hbV24)return;" +
-        " v.__hbV24=1;" +
-
-        " var box=document.createElement('div');" +
-        " var cv=document.createElement('canvas');" +
-        " var bar=document.createElement('div');" +
-        " var play=document.createElement('button');" +
-        " var seek=document.createElement('input');" +
-        " var tm=document.createElement('span');" +
-        " var mute=document.createElement('button');" +
-        " var fs=document.createElement('button');" +
-
-        " box.className='hbv24-box';" +
-        " cv.className='hbv24-canvas';" +
-        " bar.className='hbv24-bar';" +
-        " play.textContent='❚❚';" +
-        " mute.textContent=v.muted?'🔇':'🔊';" +
-        " fs.textContent='⛶';" +
-        " seek.type='range';seek.min='0';seek.max='1000';seek.value='0';" +
-
-        " box.style.cssText='position:fixed;z-index:2147483000;overflow:hidden;background:#000;pointer-events:none;';" +
-        " cv.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:auto;background:#000;';" +
-        " bar.style.cssText='position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;align-items:center;gap:6px;padding:4px 6px;box-sizing:border-box;background:linear-gradient(transparent,rgba(0,0,0,.82));color:#fff;font:12px sans-serif;pointer-events:auto;';" +
-        " play.style.cssText='width:38px;height:34px;background:rgba(0,0,0,.55);color:#fff;border:1px solid #aaa;border-radius:4px;';" +
-        " mute.style.cssText=play.style.cssText;" +
-        " fs.style.cssText=play.style.cssText;" +
-        " seek.style.cssText='flex:1;min-width:60px;';" +
-        " tm.style.cssText='min-width:78px;text-align:center;color:#fff;text-shadow:0 1px 2px #000;';" +
-
-        " bar.appendChild(play);bar.appendChild(seek);bar.appendChild(tm);bar.appendChild(mute);bar.appendChild(fs);" +
-        " box.appendChild(cv);box.appendChild(bar);document.documentElement.appendChild(box);" +
-
-        " try{v.controls=false;}catch(e){}" +
-        " v.style.opacity='0.001';" +
-
-        " function toggle(){" +
-        "  if(v.paused){var p=v.play();if(p&&p.catch)p.catch(function(){});}else{v.pause();}" +
-        " }" +
-        " cv.addEventListener('click',toggle,false);" +
-        " play.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();toggle();},false);" +
-        " mute.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();v.muted=!v.muted;mute.textContent=v.muted?'🔇':'🔊';},false);" +
-
-        " var seeking=0;" +
-        " seek.addEventListener('touchstart',function(){seeking=1;},false);" +
-        " seek.addEventListener('mousedown',function(){seeking=1;},false);" +
-        " seek.addEventListener('input',function(){if(isFinite(v.duration)&&v.duration>0)v.currentTime=(Number(seek.value)/1000)*v.duration;},false);" +
-        " seek.addEventListener('change',function(){seeking=0;},false);" +
-        " seek.addEventListener('touchend',function(){seeking=0;},false);" +
-        " seek.addEventListener('mouseup',function(){seeking=0;},false);" +
-
-        " fs.addEventListener('click',function(e){" +
-        "  e.preventDefault();e.stopPropagation();" +
-        "  try{" +
-        "   if(document.fullscreenElement===box){document.exitFullscreen&&document.exitFullscreen();}" +
-        "   else if(box.requestFullscreen){box.requestFullscreen();}" +
-        "   else if(box.webkitRequestFullscreen){box.webkitRequestFullscreen();}" +
-        "  }catch(x){}" +
-        " },false);" +
-
-        " function place(){" +
-        "  var full=(document.fullscreenElement===box)||(document.webkitFullscreenElement===box);" +
-        "  if(full){" +
-        "   box.style.left='0';box.style.top='0';box.style.width='100vw';box.style.height='100vh';box.style.display='block';return;" +
-        "  }" +
-        "  var r=v.getBoundingClientRect();" +
-        "  var visible=r.width>2&&r.height>2&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;" +
-        "  box.style.display=visible?'block':'none';" +
-        "  if(!visible)return;" +
-        "  box.style.left=r.left+'px';box.style.top=r.top+'px';box.style.width=r.width+'px';box.style.height=r.height+'px';" +
-        " }" +
-
-        " function frame(){" +
-        "  try{" +
-        "   if(!document.documentElement.contains(v)){box.remove();return;}" +
-        "   place();" +
-        "   var r=box.getBoundingClientRect();" +
-        "   var dpr=Math.min(2,window.devicePixelRatio||1);" +
-        "   var w=Math.max(2,Math.round(r.width*dpr)),h=Math.max(2,Math.round(r.height*dpr));" +
-        "   if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}" +
-        "   var ctx=cv.getContext('2d');" +
-        "   if(v.readyState>=2&&v.videoWidth>0){drawContain(ctx,v,w,h);}" +
-        "   if(!seeking&&isFinite(v.duration)&&v.duration>0)seek.value=String(Math.round((v.currentTime/v.duration)*1000));" +
-        "   tm.textContent=formatTime(v.currentTime)+' / '+formatTime(v.duration);" +
-        "   play.textContent=v.paused?'▶':'❚❚';" +
-        "  }catch(e){}" +
-        "  requestAnimationFrame(frame);" +
-        " }" +
-        " requestAnimationFrame(frame);" +
-        "}" +
-
-        "window.__hbV24Scan=function(){" +
-        " var a=document.getElementsByTagName('video');" +
-        " for(var i=0;i<a.length;i++)install(a[i]);" +
-        "};" +
-        "window.__hbV24Scan();" +
-
-        "try{" +
-        " new MutationObserver(function(){window.__hbV24Scan();}).observe(document.documentElement,{childList:true,subtree:true});" +
-        "}catch(e){}" +
-
-        "}catch(e){}" +
-        "})();";
 }

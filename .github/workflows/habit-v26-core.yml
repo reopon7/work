@@ -95,6 +95,6 @@ jobs:
             build/out/classes2.sha256
             build/out/classes2.strings.txt
             build/out/compiled-classes.txt
-            build/out/WebViewManager.javap.txt
+            build/out/*.javap.txt
             build/out/HABIT_BROWSER_V26_CORE_SOURCE.zip
           if-no-files-found: error

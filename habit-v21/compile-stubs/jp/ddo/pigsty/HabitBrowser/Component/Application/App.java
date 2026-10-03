@@ -14,4 +14,11 @@ public class App extends Application {
 
     public static void setPreferenceBoolean(String key, boolean value) {
     }
+
+    public static int getPreferenceInt(String key, int defaultValue) {
+        return defaultValue;
+    }
+
+    public static void setPreferenceInt(String key, int value) {
+    }
 }

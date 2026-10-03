@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V42 Java compatibility layer.
+ * V44 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -43,7 +43,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V42 smooth-scroll video renderer initialized");
+        Log.i(TAG, "V44 fullscreen swipe-seek initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -282,6 +282,7 @@ public final class Mod extends App {
                     }
                     if (url != null && !url.equals(guarded)) {
                         webView.evaluateJavascript(ANTI_HIJACK_JS, null);
+                        webView.evaluateJavascript(FULLSCREEN_SEEK_GESTURE_JS, null);
                         synchronized (GUARDED_URL) {
                             GUARDED_URL.put(webView, url);
                         }
@@ -332,7 +333,7 @@ public final class Mod extends App {
                         }
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V42 native video loop failed", t);
+                    Log.e(TAG, "V44 native video loop failed", t);
                 }
 
                 try {
@@ -394,6 +395,165 @@ public final class Mod extends App {
         "}" +
         "cleanMeta();" +
         "try{new MutationObserver(cleanMeta).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}" +
+        "}catch(e){}" +
+        "})();";
+
+    /**
+     * Fullscreen horizontal swipe-to-seek.
+     *
+     * - single-finger horizontal drag anywhere on fullscreen video
+     * - tap still behaves normally; gesture activates only after direction lock
+     * - vertical movement is never claimed
+     * - seek is committed once on finger-up to avoid decoder thrash
+     * - short clips: one screen width can traverse the whole clip
+     * - long clips: one screen width is capped at 10 minutes
+     * - compact HUD shows target time and delta while dragging
+     */
+    private static final String FULLSCREEN_SEEK_GESTURE_JS =
+        "(function(){" +
+        "try{" +
+        "if(window.__hbV44SeekInstalled)return;" +
+        "window.__hbV44SeekInstalled=1;" +
+
+        "var s={down:0,locked:0,cancel:0,x0:0,y0:0,start:0,target:0,dur:0,wasPaused:1,v:null,hud:null,bar:null,fill:null};" +
+
+        "function clamp(v,a,b){return Math.max(a,Math.min(b,v));}" +
+        "function fmt(t){" +
+        " t=Math.max(0,Math.floor(Number(t)||0));" +
+        " var h=Math.floor(t/3600),m=Math.floor((t%3600)/60),x=t%60;" +
+        " if(h>0)return h+':' +(m<10?'0':'')+m+':' +(x<10?'0':'')+x;" +
+        " return m+':' +(x<10?'0':'')+x;" +
+        "}" +
+
+        "function visible(v){" +
+        " if(!v)return false;" +
+        " try{" +
+        "  var r=v.getBoundingClientRect(),cs=getComputedStyle(v);" +
+        "  return r.width>8&&r.height>8&&cs.display!=='none'&&cs.visibility!=='hidden'&&Number(cs.opacity||1)>0.01;" +
+        " }catch(e){return false;}" +
+        "}" +
+
+        "function fsRoot(){" +
+        " return document.fullscreenElement||document.webkitFullscreenElement||document.mozFullScreenElement||document.msFullscreenElement||null;" +
+        "}" +
+
+        "function pickVideo(){" +
+        " var root=fsRoot(),v=null;" +
+        " try{" +
+        "  if(root){" +
+        "   if(root.tagName&&String(root.tagName).toLowerCase()==='video')v=root;" +
+        "   if(!v&&root.querySelector)v=root.querySelector('video');" +
+        "  }" +
+        " }catch(e){}" +
+        " if(v&&visible(v))return v;" +
+
+        " var a=document.getElementsByTagName('video'),best=null,bestArea=0;" +
+        " for(var i=0;i<a.length;i++){" +
+        "  var q=a[i];if(!visible(q))continue;" +
+        "  var r=q.getBoundingClientRect();" +
+        "  var area=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));" +
+        "  if(area>bestArea){best=q;bestArea=area;}" +
+        " }" +
+        " if(!best)return null;" +
+
+        " try{" +
+        "  if(best.webkitDisplayingFullscreen)return best;" +
+        " }catch(e){}" +
+
+        " if(root)return best;" +
+
+        " try{" +
+        "  var br=best.getBoundingClientRect();" +
+        "  var cover=(br.width*br.height)/(Math.max(1,innerWidth*innerHeight));" +
+        "  var landscape=innerWidth>innerHeight;" +
+        "  if(landscape&&cover>=0.72)return best;" +
+        " }catch(e){}" +
+        " return null;" +
+        "}" +
+
+        "function ensureHud(){" +
+        " if(s.hud&&document.documentElement.contains(s.hud))return;" +
+        " var h=document.createElement('div');" +
+        " h.id='__hbV44SeekHud';" +
+        " h.style.cssText='position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483647;min-width:150px;padding:12px 16px 10px;border-radius:12px;background:rgba(0,0,0,.72);color:#fff;font:600 18px/1.25 sans-serif;text-align:center;pointer-events:none;opacity:0;transition:opacity .08s linear;box-sizing:border-box;';" +
+        " var t=document.createElement('div');t.id='__hbV44SeekText';h.appendChild(t);" +
+        " var b=document.createElement('div');" +
+        " b.style.cssText='height:3px;margin-top:9px;background:rgba(255,255,255,.28);border-radius:2px;overflow:hidden;';" +
+        " var f=document.createElement('div');" +
+        " f.style.cssText='height:100%;width:0;background:#fff;border-radius:2px;';" +
+        " b.appendChild(f);h.appendChild(b);" +
+        " document.documentElement.appendChild(h);" +
+        " s.hud=h;s.bar=t;s.fill=f;" +
+        "}" +
+
+        "function showHud(){" +
+        " ensureHud();" +
+        " var d=s.target-s.start,sign=d>=0?'+':'−';" +
+        " s.bar.textContent=fmt(s.target)+' / '+fmt(s.dur)+'   '+sign+fmt(Math.abs(d));" +
+        " s.fill.style.width=(s.dur>0?clamp((s.target/s.dur)*100,0,100):0)+'%';" +
+        " s.hud.style.opacity='1';" +
+        "}" +
+        "function hideHud(){" +
+        " if(s.hud)s.hud.style.opacity='0';" +
+        "}" +
+
+        "function reset(){" +
+        " s.down=0;s.locked=0;s.cancel=0;s.v=null;hideHud();" +
+        "}" +
+
+        "function onStart(e){" +
+        " if(!e.touches||e.touches.length!==1){reset();return;}" +
+        " var v=pickVideo();" +
+        " if(!v)return;" +
+        " var dur=Number(v.duration);" +
+        " if(!isFinite(dur)||dur<=0)return;" +
+        " var p=e.touches[0];" +
+        " s.down=1;s.locked=0;s.cancel=0;s.x0=p.clientX;s.y0=p.clientY;" +
+        " s.start=Number(v.currentTime)||0;s.target=s.start;s.dur=dur;s.wasPaused=!!v.paused;s.v=v;" +
+        "}" +
+
+        "function onMove(e){" +
+        " if(!s.down||!s.v||!e.touches||e.touches.length!==1)return;" +
+        " var p=e.touches[0],dx=p.clientX-s.x0,dy=p.clientY-s.y0;" +
+        " if(!s.locked){" +
+        "  if(Math.abs(dx)<18&&Math.abs(dy)<18)return;" +
+        "  if(Math.abs(dy)>Math.abs(dx)*1.05){s.cancel=1;reset();return;}" +
+        "  if(Math.abs(dx)<=Math.abs(dy)*1.15)return;" +
+        "  s.locked=1;" +
+        " }" +
+        " if(!s.locked)return;" +
+        " if(e.cancelable)e.preventDefault();" +
+        " if(e.stopImmediatePropagation)e.stopImmediatePropagation();else e.stopPropagation();" +
+        " var span=Math.min(s.dur,600);" +
+        " var w=Math.max(240,innerWidth||screen.width||1080);" +
+        " s.target=clamp(s.start+(dx/w)*span,0,Math.max(0,s.dur-.05));" +
+        " showHud();" +
+        "}" +
+
+        "function onEnd(e){" +
+        " if(!s.down)return;" +
+        " var v=s.v,commit=s.locked&&!s.cancel&&v;" +
+        " if(commit){" +
+        "  if(e&&e.cancelable)e.preventDefault();" +
+        "  if(e&&e.stopImmediatePropagation)e.stopImmediatePropagation();else if(e)e.stopPropagation();" +
+        "  try{" +
+        "   v.currentTime=s.target;" +
+        "   if(!s.wasPaused){var p=v.play();if(p&&p.catch)p.catch(function(){});}" +
+        "  }catch(x){}" +
+        " }" +
+        " reset();" +
+        "}" +
+
+        "document.addEventListener('touchstart',onStart,{capture:true,passive:true});" +
+        "document.addEventListener('touchmove',onMove,{capture:true,passive:false});" +
+        "document.addEventListener('touchend',onEnd,{capture:true,passive:false});" +
+        "document.addEventListener('touchcancel',reset,{capture:true,passive:true});" +
+
+        "function fsChanged(){reset();}" +
+        "document.addEventListener('fullscreenchange',fsChanged,true);" +
+        "document.addEventListener('webkitfullscreenchange',fsChanged,true);" +
+        "document.addEventListener('mozfullscreenchange',fsChanged,true);" +
+        "document.addEventListener('MSFullscreenChange',fsChanged,true);" +
         "}catch(e){}" +
         "})();";
 

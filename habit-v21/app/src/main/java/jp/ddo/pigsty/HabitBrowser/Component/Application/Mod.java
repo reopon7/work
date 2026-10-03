@@ -39,6 +39,8 @@ public final class Mod extends App {
             Collections.synchronizedMap(new WeakHashMap<WebView, String>());
     private static final Map<WebView, Long> LAST_GUARD_INSTALL =
             Collections.synchronizedMap(new WeakHashMap<WebView, Long>());
+    private static final Map<WebView, Boolean> ATTACH_WATCHED =
+            Collections.synchronizedMap(new WeakHashMap<WebView, Boolean>());
 
     @Override
     public void onCreate() {
@@ -103,7 +105,7 @@ public final class Mod extends App {
                 }
 
                 try {
-                    root.postDelayed(this, 5000L);
+                    root.postDelayed(this, 10000L);
                 } catch (Throwable ignored) {
                     synchronized (ROOT_SCANS) {
                         ROOT_SCANS.remove(root);
@@ -131,6 +133,34 @@ public final class Mod extends App {
 
     private static void applyWebView(final WebView webView) {
         if (webView == null) return;
+
+        synchronized (ATTACH_WATCHED) {
+            if (!ATTACH_WATCHED.containsKey(webView)) {
+                webView.addOnAttachStateChangeListener(
+                        new View.OnAttachStateChangeListener() {
+                            @Override
+                            public void onViewAttachedToWindow(View v) {
+                                if (v instanceof WebView) {
+                                    applyWebView((WebView) v);
+                                }
+                            }
+
+                            @Override
+                            public void onViewDetachedFromWindow(View v) {
+                                if (!(v instanceof WebView)) return;
+                                WebView w = (WebView) v;
+
+                                NativeVideoOverlay.destroy(w);
+                                synchronized (STARTED) { STARTED.remove(w); }
+                                synchronized (CONFIGURED) { CONFIGURED.remove(w); }
+                                synchronized (ETOLAND_PREPARED_URL) { ETOLAND_PREPARED_URL.remove(w); }
+                                synchronized (GUARDED_URL) { GUARDED_URL.remove(w); }
+                                synchronized (LAST_GUARD_INSTALL) { LAST_GUARD_INSTALL.remove(w); }
+                            }
+                        });
+                ATTACH_WATCHED.put(webView, Boolean.TRUE);
+            }
+        }
 
         synchronized (CONFIGURED) {
             if (CONFIGURED.containsKey(webView)) {

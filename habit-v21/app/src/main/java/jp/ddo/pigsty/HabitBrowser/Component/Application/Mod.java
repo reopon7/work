@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V41 Java compatibility layer.
+ * V42 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -31,13 +31,19 @@ public final class Mod extends App {
             Collections.synchronizedMap(new WeakHashMap<WebView, Boolean>());
     private static final Map<View, Boolean> ROOT_SCANS =
             Collections.synchronizedMap(new WeakHashMap<View, Boolean>());
+    private static final Map<WebView, Boolean> CONFIGURED =
+            Collections.synchronizedMap(new WeakHashMap<WebView, Boolean>());
+    private static final Map<WebView, String> ETOLAND_PREPARED_URL =
+            Collections.synchronizedMap(new WeakHashMap<WebView, String>());
+    private static final Map<WebView, String> GUARDED_URL =
+            Collections.synchronizedMap(new WeakHashMap<WebView, String>());
 
     @Override
     public void onCreate() {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V41 texture-video renderer initialized");
+        Log.i(TAG, "V42 smooth-scroll video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -95,14 +101,14 @@ public final class Mod extends App {
                 }
 
                 try {
-                    root.postDelayed(this, 500L);
+                    root.postDelayed(this, 1500L);
                 } catch (Throwable ignored) {
                     synchronized (ROOT_SCANS) {
                         ROOT_SCANS.remove(root);
                     }
                 }
             }
-        }, 250L);
+        }, 500L);
     }
 
     private static void applyTree(View view) {
@@ -121,13 +127,20 @@ public final class Mod extends App {
     }
 
     private static void applyWebView(final WebView webView) {
+        if (webView == null) return;
+
+        synchronized (CONFIGURED) {
+            if (CONFIGURED.containsKey(webView)) {
+                startInjectionLoop(webView);
+                return;
+            }
+        }
+
         try {
             WebSettings settings = webView.getSettings();
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
 
-            // Very old imported backups can select 2012-2014 UA strings.
-            // Do not let those override a modern System WebView.
             String ua = settings.getUserAgentString();
             if (isLegacyImportedUserAgent(ua)) {
                 settings.setUserAgentString(null);
@@ -147,13 +160,13 @@ public final class Mod extends App {
                 cookies.setAcceptThirdPartyCookies(webView, true);
             }
 
-            // Keep WebView on a hardware layer. V23 confirmed layer=2/hw=true.
             webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-            webView.invalidate();
 
-            // Native guard wraps the legacy WebViewClient instead of replacing
-            // its behavior. It blocks only known Coupang/AliExpress hijack URLs.
             RedirectGuard.install(webView);
+
+            synchronized (CONFIGURED) {
+                CONFIGURED.put(webView, Boolean.TRUE);
+            }
 
             startInjectionLoop(webView);
         } catch (Throwable t) {
@@ -247,76 +260,88 @@ public final class Mod extends App {
 
         webView.postDelayed(new Runnable() {
             @Override public void run() {
-                long nextDelay = 2000L;
+                long nextDelay = 2500L;
 
                 try {
-                    // Do not keep dead WebViews alive forever. Removing the map
-                    // marker allows a re-attached/recreated WebView to start a
-                    // fresh loop later.
                     if (webView.getParent() == null || webView.getWindowToken() == null) {
                         NativeVideoOverlay.destroy(webView);
-                        synchronized (STARTED) {
-                            STARTED.remove(webView);
-                        }
+                        synchronized (STARTED) { STARTED.remove(webView); }
+                        synchronized (CONFIGURED) { CONFIGURED.remove(webView); }
+                        synchronized (ETOLAND_PREPARED_URL) { ETOLAND_PREPARED_URL.remove(webView); }
+                        synchronized (GUARDED_URL) { GUARDED_URL.remove(webView); }
                         return;
                     }
 
-                    // Re-install if legacy code replaced the WebViewClient
-                    // after Activity creation.
                     RedirectGuard.install(webView);
 
-                    // JS-side guard catches touch/click/window.open/form/meta
-                    // redirects before native navigation begins.
-                    webView.evaluateJavascript(ANTI_HIJACK_JS, null);
-
                     String url = webView.getUrl();
+
+                    String guarded;
+                    synchronized (GUARDED_URL) {
+                        guarded = GUARDED_URL.get(webView);
+                    }
+                    if (url != null && !url.equals(guarded)) {
+                        webView.evaluateJavascript(ANTI_HIJACK_JS, null);
+                        synchronized (GUARDED_URL) {
+                            GUARDED_URL.put(webView, url);
+                        }
+                    }
+
                     if (url != null && url.contains("etoland.co.kr")) {
-                        // Imported/legacy timer policy can leave a WebView in a
-                        // paused state even after the preference itself is fixed.
-                        // Explicitly recover the live WebView/timer state.
-                        try { webView.onResume(); } catch (Throwable ignored) {}
-                        try { webView.resumeTimers(); } catch (Throwable ignored) {}
-
-                        WebSettings s = webView.getSettings();
-                        s.setJavaScriptEnabled(true);
-                        s.setDomStorageEnabled(true);
-                        s.setLoadsImagesAutomatically(true);
-                        s.setBlockNetworkImage(false);
-                        s.setBlockNetworkLoads(false);
-                        if (Build.VERSION.SDK_INT >= 21) {
-                            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-                        }
-                        if (Build.VERSION.SDK_INT >= 17) {
-                            s.setMediaPlaybackRequiresUserGesture(false);
+                        String prepared;
+                        synchronized (ETOLAND_PREPARED_URL) {
+                            prepared = ETOLAND_PREPARED_URL.get(webView);
                         }
 
-                        // Always use the current System WebView UA on Etoland.
-                        s.setUserAgentString(null);
+                        if (!url.equals(prepared)) {
+                            try { webView.onResume(); } catch (Throwable ignored) {}
+                            try { webView.resumeTimers(); } catch (Throwable ignored) {}
 
-                        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-                        webView.invalidate();
+                            WebSettings s = webView.getSettings();
+                            s.setJavaScriptEnabled(true);
+                            s.setDomStorageEnabled(true);
+                            s.setLoadsImagesAutomatically(true);
+                            s.setBlockNetworkImage(false);
+                            s.setBlockNetworkLoads(false);
+                            if (Build.VERSION.SDK_INT >= 21) {
+                                s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                            }
+                            if (Build.VERSION.SDK_INT >= 17) {
+                                s.setMediaPlaybackRequiresUserGesture(false);
+                            }
 
-                        // V38 no longer depends on the flaky WebView video
-                        // compositor or DOM canvas overlay. A native Android
-                        // VideoView is placed over the site's visible <video>.
+                            // Clear imported legacy/custom UA only when entering
+                            // a new Etoland document, not every polling tick.
+                            s.setUserAgentString(null);
+                            webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
+                            synchronized (ETOLAND_PREPARED_URL) {
+                                ETOLAND_PREPARED_URL.put(webView, url);
+                            }
+                        }
+
+                        // V42 probes source/play state at low frequency. Smooth
+                        // scrolling is handled natively by ViewTreeObserver,
+                        // avoiding evaluateJavascript + layout churn every 250 ms.
                         NativeVideoOverlay.update(webView);
-                        nextDelay = 250L;
+                        nextDelay = 1200L;
                     } else {
                         NativeVideoOverlay.destroy(webView);
+                        synchronized (ETOLAND_PREPARED_URL) {
+                            ETOLAND_PREPARED_URL.remove(webView);
+                        }
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V41 native video loop failed", t);
+                    Log.e(TAG, "V42 native video loop failed", t);
                 }
 
                 try {
                     webView.postDelayed(this, nextDelay);
                 } catch (Throwable ignored) {
-                    synchronized (STARTED) {
-                        STARTED.remove(webView);
-                    }
+                    synchronized (STARTED) { STARTED.remove(webView); }
                 }
             }
-        }, 400L);
+        }, 500L);
     }
 
     private static final String ANTI_HIJACK_JS =

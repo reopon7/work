@@ -3,7 +3,6 @@ package jp.ddo.pigsty.HabitBrowser.Component.Application;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
 import android.net.Uri;
@@ -15,7 +14,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
+import android.widget.AbsoluteLayout;
 import android.widget.FrameLayout;
 import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
@@ -28,17 +27,21 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V43 smooth passive Etoland video visualizer.
+ * V44 Etoland native video fallback.
  *
- * Performance model:
- * - JavaScript probes source/play state only at low frequency.
- * - Scroll geometry is handled on the native UI thread.
- * - Scroll callbacks are coalesced to at most one positioning update per frame.
- * - Expensive screen-coordinate queries are cached until layout/probe changes.
- * - During an active fling no MediaPlayer position query/seek is performed.
+ * V41-V43 placed the TextureView at Activity-root level and manually chased
+ * WebView scrolling. That was much better than VideoView/SurfaceView, but it
+ * could still feel detached because two unrelated view trees had to be kept in
+ * sync.
+ *
+ * V44 puts the TextureView container directly inside the WebView itself.
+ * WebView scroll/clip now moves the video with the document natively, so there
+ * is no scroll listener, no per-frame translation, no global-coordinate query,
+ * and no clipBounds churn.
  */
+@SuppressWarnings("deprecation")
 final class NativeVideoOverlay {
-    private static final String TAG = "HabitNativeTexture";
+    private static final String TAG = "HabitNativeInWeb";
 
     private static final WeakHashMap<WebView, State> STATES =
             new WeakHashMap<WebView, State>();
@@ -89,7 +92,6 @@ final class NativeVideoOverlay {
         if (state == null) return;
 
         pauseVisual(state);
-
         if (state.container != null) {
             state.container.setVisibility(View.GONE);
         }
@@ -110,21 +112,6 @@ final class NativeVideoOverlay {
         State state = STATES.remove(webView);
         if (state == null) return;
 
-        try {
-            if (state.scrollListener != null) {
-                ViewTreeObserver observer = webView.getViewTreeObserver();
-                if (observer.isAlive()) {
-                    observer.removeOnScrollChangedListener(state.scrollListener);
-                }
-            }
-        } catch (Throwable ignored) {}
-
-        try {
-            if (state.layoutListener != null) {
-                webView.removeOnLayoutChangeListener(state.layoutListener);
-            }
-        } catch (Throwable ignored) {}
-
         releasePlayer(state);
 
         try {
@@ -135,7 +122,8 @@ final class NativeVideoOverlay {
         } catch (Throwable ignored) {}
 
         try {
-            if (state.container != null && state.container.getParent() instanceof ViewGroup) {
+            if (state.container != null &&
+                state.container.getParent() instanceof ViewGroup) {
                 ((ViewGroup) state.container.getParent()).removeView(state.container);
             }
         } catch (Throwable ignored) {}
@@ -143,6 +131,7 @@ final class NativeVideoOverlay {
 
     static synchronized void destroyAll(Activity activity) {
         if (activity == null) return;
+
         WebView[] views = STATES.keySet().toArray(new WebView[0]);
         for (WebView view : views) {
             State state = STATES.get(view);
@@ -202,7 +191,7 @@ final class NativeVideoOverlay {
                 return;
             }
 
-            if (!refreshGeometryCache(webView, state)) {
+            if (!updateChildLayout(webView, state)) {
                 hide(webView);
                 return;
             }
@@ -213,11 +202,6 @@ final class NativeVideoOverlay {
                 openPlayerIfReady(state);
             } else if (state.prepared && state.player != null) {
                 syncPlayer(state, false);
-            }
-
-            if (!applyPositionFast(webView, state)) {
-                hide(webView);
-                return;
             }
 
             if (!isEligible(webView)) {
@@ -232,20 +216,17 @@ final class NativeVideoOverlay {
     }
 
     private static State createState(Activity activity, final WebView webView) {
-        View content = activity.findViewById(android.R.id.content);
-        if (!(content instanceof ViewGroup)) return null;
-
-        final ViewGroup root = (ViewGroup) content;
         final State state = new State();
         state.activity = activity;
         state.webView = webView;
-        state.root = root;
 
         PassthroughFrameLayout container = new PassthroughFrameLayout(activity);
         container.setBackgroundColor(0xff000000);
         container.setVisibility(View.GONE);
         container.setClipChildren(true);
         container.setClipToPadding(true);
+        container.setClickable(false);
+        container.setFocusable(false);
 
         final TextureView texture = new TextureView(activity);
         texture.setOpaque(true);
@@ -264,6 +245,7 @@ final class NativeVideoOverlay {
                 try {
                     if (state.surface != null) state.surface.release();
                 } catch (Throwable ignored) {}
+
                 state.surface = new Surface(surface);
                 openPlayerIfReady(state);
             }
@@ -280,9 +262,11 @@ final class NativeVideoOverlay {
                         state.player.setSurface(null);
                     }
                 } catch (Throwable ignored) {}
+
                 try {
                     if (state.surface != null) state.surface.release();
                 } catch (Throwable ignored) {}
+
                 state.surface = null;
                 return true;
             }
@@ -292,181 +276,69 @@ final class NativeVideoOverlay {
             }
         });
 
-        root.addView(container, new ViewGroup.LayoutParams(1, 1));
-
-        state.positionRunnable = new Runnable() {
-            @Override
-            public void run() {
-                state.positionPosted = false;
-
-                if (!isEligible(webView)) {
-                    hide(webView);
-                    return;
-                }
-
-                if (!applyPositionFast(webView, state)) {
-                    hide(webView);
-                    return;
-                }
-
-                showVisual(state);
-            }
-        };
-
-        state.scrollListener = new ViewTreeObserver.OnScrollChangedListener() {
-            @Override
-            public void onScrollChanged() {
-                state.lastScrollMs = SystemClock.uptimeMillis();
-                schedulePosition(webView, state);
-            }
-        };
-
         try {
-            webView.getViewTreeObserver().addOnScrollChangedListener(state.scrollListener);
+            webView.addView(
+                    container,
+                    new AbsoluteLayout.LayoutParams(1, 1, 0, 0));
         } catch (Throwable t) {
-            Log.e(TAG, "scroll listener install failed", t);
+            Log.e(TAG, "failed to attach in-WebView video child", t);
+            return null;
         }
-
-        state.layoutListener = new View.OnLayoutChangeListener() {
-            @Override
-            public void onLayoutChange(
-                    View v,
-                    int left, int top, int right, int bottom,
-                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
-                if (refreshGeometryCache(webView, state)) {
-                    schedulePosition(webView, state);
-                }
-            }
-        };
-        webView.addOnLayoutChangeListener(state.layoutListener);
 
         return state;
     }
 
-    private static void schedulePosition(WebView webView, State state) {
-        if (state.positionPosted || state.positionRunnable == null) return;
-        state.positionPosted = true;
-        try {
-            webView.postOnAnimation(state.positionRunnable);
-        } catch (Throwable t) {
-            state.positionPosted = false;
-            try { webView.post(state.positionRunnable); } catch (Throwable ignored) {}
-        }
-    }
-
     /**
-     * Expensive coordinate queries are performed only on probe/layout changes,
-     * never for every scroll callback.
+     * Child coordinates are document coordinates in physical WebView pixels.
+     * Because the container is a real WebView child, WebView's own scroll and
+     * clipping pipeline moves it with the page automatically.
      */
-    private static boolean refreshGeometryCache(WebView webView, State state) {
+    private static boolean updateChildLayout(WebView webView, State state) {
         try {
-            if (state.viewportWidthCss < 1.0 ||
-                state.widthCss < 2.0 ||
-                state.heightCss < 2.0) {
-                return false;
-            }
+            int webWidth = webView.getWidth();
+            if (webWidth < 2 || state.viewportWidthCss < 1.0) return false;
 
-            int[] webLoc = new int[2];
-            int[] rootLoc = new int[2];
-            webView.getLocationOnScreen(webLoc);
-            state.root.getLocationOnScreen(rootLoc);
+            double scale = ((double) webWidth) / state.viewportWidthCss;
 
-            Rect visibleScreen = new Rect();
-            if (!webView.getGlobalVisibleRect(visibleScreen)) return false;
+            int x = (int) Math.round(state.docLeftCss * scale);
+            int y = (int) Math.round(state.docTopCss * scale);
+            int width = Math.max(2, (int) Math.round(state.widthCss * scale));
+            int height = Math.max(2, (int) Math.round(state.heightCss * scale));
 
-            double scale = ((double) webView.getWidth()) / state.viewportWidthCss;
+            boolean changed =
+                    x != state.layoutX ||
+                    y != state.layoutY ||
+                    width != state.layoutWidth ||
+                    height != state.layoutHeight;
 
-            state.baseLeft =
-                    webLoc[0] - rootLoc[0] +
-                    (int) Math.round(state.docLeftCss * scale);
-            state.baseTop =
-                    webLoc[1] - rootLoc[1] +
-                    (int) Math.round(state.docTopCss * scale);
-            state.fullWidth = Math.max(2, (int) Math.round(state.widthCss * scale));
-            state.fullHeight = Math.max(2, (int) Math.round(state.heightCss * scale));
+            if (changed) {
+                AbsoluteLayout.LayoutParams lp;
+                ViewGroup.LayoutParams raw = state.container.getLayoutParams();
 
-            state.visibleLeft = visibleScreen.left - rootLoc[0];
-            state.visibleTop = visibleScreen.top - rootLoc[1];
-            state.visibleRight = visibleScreen.right - rootLoc[0];
-            state.visibleBottom = visibleScreen.bottom - rootLoc[1];
+                if (raw instanceof AbsoluteLayout.LayoutParams) {
+                    lp = (AbsoluteLayout.LayoutParams) raw;
+                    lp.x = x;
+                    lp.y = y;
+                    lp.width = width;
+                    lp.height = height;
+                } else {
+                    lp = new AbsoluteLayout.LayoutParams(width, height, x, y);
+                }
 
-            if (state.layoutWidth != state.fullWidth ||
-                state.layoutHeight != state.fullHeight) {
-                ViewGroup.LayoutParams lp = state.container.getLayoutParams();
-                lp.width = state.fullWidth;
-                lp.height = state.fullHeight;
                 state.container.setLayoutParams(lp);
-                state.layoutWidth = state.fullWidth;
-                state.layoutHeight = state.fullHeight;
+                state.layoutX = x;
+                state.layoutY = y;
+                state.layoutWidth = width;
+                state.layoutHeight = height;
+
                 applyTextureAspect(state);
             }
 
-            state.geometryValid = true;
             return true;
         } catch (Throwable t) {
-            state.geometryValid = false;
-            Log.e(TAG, "refresh geometry failed", t);
+            Log.e(TAG, "update child layout failed", t);
             return false;
         }
-    }
-
-    /**
-     * Scroll hot-path: integer math + translation + optional clip update only.
-     */
-    private static boolean applyPositionFast(WebView webView, State state) {
-        if (!state.geometryValid) return false;
-
-        int fullLeft = state.baseLeft - webView.getScrollX();
-        int fullTop = state.baseTop - webView.getScrollY();
-
-        int localClipLeft = Math.max(0, state.visibleLeft - fullLeft);
-        int localClipTop = Math.max(0, state.visibleTop - fullTop);
-        int localClipRight = Math.min(state.fullWidth, state.visibleRight - fullLeft);
-        int localClipBottom = Math.min(state.fullHeight, state.visibleBottom - fullTop);
-
-        if (localClipRight - localClipLeft < 2 ||
-            localClipBottom - localClipTop < 2) {
-            return false;
-        }
-
-        if (state.lastLeft != fullLeft) {
-            state.container.setTranslationX(fullLeft);
-            state.lastLeft = fullLeft;
-        }
-
-        if (state.lastTop != fullTop) {
-            state.container.setTranslationY(fullTop);
-            state.lastTop = fullTop;
-        }
-
-        // For the common case (video fully within the WebView viewport), avoid
-        // allocating/updating clip bounds at all.
-        boolean fullVisible =
-                localClipLeft == 0 &&
-                localClipTop == 0 &&
-                localClipRight == state.fullWidth &&
-                localClipBottom == state.fullHeight;
-
-        if (fullVisible) {
-            if (state.clipActive) {
-                state.container.setClipBounds(null);
-                state.clipActive = false;
-            }
-        } else if (!state.clipActive ||
-                   state.clipLeft != localClipLeft ||
-                   state.clipTop != localClipTop ||
-                   state.clipRight != localClipRight ||
-                   state.clipBottom != localClipBottom) {
-            state.container.setClipBounds(
-                    new Rect(localClipLeft, localClipTop, localClipRight, localClipBottom));
-            state.clipActive = true;
-            state.clipLeft = localClipLeft;
-            state.clipTop = localClipTop;
-            state.clipRight = localClipRight;
-            state.clipBottom = localClipBottom;
-        }
-
-        return true;
     }
 
     private static void showVisual(State state) {
@@ -500,6 +372,7 @@ final class NativeVideoOverlay {
             if (state.pageUrl != null && state.pageUrl.length() > 0) {
                 headers.put("Referer", state.pageUrl);
             }
+
             try {
                 String cookie = CookieManager.getInstance().getCookie(state.src);
                 if (cookie != null && cookie.length() > 0) {
@@ -525,12 +398,16 @@ final class NativeVideoOverlay {
                 @Override
                 public void onPrepared(MediaPlayer player) {
                     if (state.player != player) return;
+
                     state.prepared = true;
                     state.videoWidth = player.getVideoWidth();
                     state.videoHeight = player.getVideoHeight();
+
                     applyTextureAspect(state);
+
                     try { player.setVolume(0.0f, 0.0f); } catch (Throwable ignored) {}
                     try { player.setLooping(state.pendingLoop); } catch (Throwable ignored) {}
+
                     syncPlayer(state, true);
                 }
             });
@@ -560,15 +437,13 @@ final class NativeVideoOverlay {
         try {
             long now = SystemClock.uptimeMillis();
 
-            // Never query/seek MediaPlayer while the user is actively scrolling.
-            boolean scrolling = now - state.lastScrollMs < 500L;
-
-            if (!scrolling &&
-                (forceSeek || now - state.lastDriftSyncMs >= 5000L)) {
+            if (forceSeek || now - state.lastDriftSyncMs >= 7000L) {
                 int actual = mp.getCurrentPosition();
-                if (forceSeek || Math.abs(actual - state.pendingSeekMs) > 4000) {
+
+                if (forceSeek || Math.abs(actual - state.pendingSeekMs) > 5000) {
                     mp.seekTo(state.pendingSeekMs);
                 }
+
                 state.lastDriftSyncMs = now;
             }
 
@@ -593,9 +468,11 @@ final class NativeVideoOverlay {
 
     private static void releasePlayer(State state) {
         if (state == null) return;
+
         MediaPlayer old = state.player;
         state.player = null;
         state.prepared = false;
+
         if (old == null) return;
 
         try { old.setSurface(null); } catch (Throwable ignored) {}
@@ -619,8 +496,10 @@ final class NativeVideoOverlay {
         int top = 0;
 
         if (state.videoWidth > 0 && state.videoHeight > 0) {
-            double videoAspect = (double) state.videoWidth / (double) state.videoHeight;
-            double boxAspect = (double) boxW / (double) boxH;
+            double videoAspect =
+                    (double) state.videoWidth / (double) state.videoHeight;
+            double boxAspect =
+                    (double) boxW / (double) boxH;
 
             if (videoAspect > boxAspect) {
                 texW = boxW;
@@ -635,6 +514,7 @@ final class NativeVideoOverlay {
 
         ViewGroup.LayoutParams raw = state.texture.getLayoutParams();
         FrameLayout.LayoutParams lp;
+
         if (raw instanceof FrameLayout.LayoutParams) {
             lp = (FrameLayout.LayoutParams) raw;
         } else {
@@ -667,13 +547,7 @@ final class NativeVideoOverlay {
             if (webView.getWidth() < 2 || webView.getHeight() < 2) return false;
 
             String url = webView.getUrl();
-            if (url == null || !url.contains("etoland.co.kr")) return false;
-
-            Rect visible = new Rect();
-            if (!webView.getGlobalVisibleRect(visible)) return false;
-            if (visible.width() < 2 || visible.height() < 2) return false;
-
-            return true;
+            return url != null && url.contains("etoland.co.kr");
         } catch (Throwable ignored) {
             return false;
         }
@@ -681,10 +555,12 @@ final class NativeVideoOverlay {
 
     private static Activity findActivity(Context context) {
         Context c = context;
+
         while (c instanceof ContextWrapper) {
             if (c instanceof Activity) return (Activity) c;
             c = ((ContextWrapper) c).getBaseContext();
         }
+
         return c instanceof Activity ? (Activity) c : null;
     }
 
@@ -706,7 +582,7 @@ final class NativeVideoOverlay {
             "  page:String(location.href)," +
             "  docLeft:r.left+scrollX,docTop:r.top+scrollY," +
             "  width:r.width,height:r.height," +
-            "  viewportWidth:innerWidth,viewportHeight:innerHeight," +
+            "  viewportWidth:innerWidth," +
             "  currentTime:Number(best.currentTime||0)," +
             "  paused:!!best.paused,loop:!!best.loop" +
             " };" +
@@ -734,15 +610,10 @@ final class NativeVideoOverlay {
     private static final class State {
         Activity activity;
         WebView webView;
-        ViewGroup root;
         PassthroughFrameLayout container;
         TextureView texture;
         Surface surface;
         MediaPlayer player;
-
-        ViewTreeObserver.OnScrollChangedListener scrollListener;
-        View.OnLayoutChangeListener layoutListener;
-        Runnable positionRunnable;
 
         String src = "";
         String pageUrl = "";
@@ -751,13 +622,9 @@ final class NativeVideoOverlay {
         boolean pendingAutoplay;
         boolean pendingLoop;
         boolean visible;
-        boolean positionPosted;
-        boolean geometryValid;
-        boolean clipActive;
 
         int pendingSeekMs;
         long lastDriftSyncMs;
-        long lastScrollMs;
 
         double docLeftCss;
         double docTopCss;
@@ -768,23 +635,9 @@ final class NativeVideoOverlay {
         int videoWidth;
         int videoHeight;
 
-        int baseLeft;
-        int baseTop;
-        int fullWidth;
-        int fullHeight;
-        int visibleLeft;
-        int visibleTop;
-        int visibleRight;
-        int visibleBottom;
-
+        int layoutX = Integer.MIN_VALUE;
+        int layoutY = Integer.MIN_VALUE;
         int layoutWidth = -1;
         int layoutHeight = -1;
-        int lastLeft = Integer.MIN_VALUE;
-        int lastTop = Integer.MIN_VALUE;
-
-        int clipLeft = Integer.MIN_VALUE;
-        int clipTop = Integer.MIN_VALUE;
-        int clipRight = Integer.MIN_VALUE;
-        int clipBottom = Integer.MIN_VALUE;
     }
 }

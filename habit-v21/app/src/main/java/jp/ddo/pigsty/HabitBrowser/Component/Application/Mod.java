@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V43 Java compatibility layer.
+ * V44 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -43,7 +43,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V43 frame-throttled video renderer initialized");
+        Log.i(TAG, "V44 WebView-overlay native video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -101,7 +101,7 @@ public final class Mod extends App {
                 }
 
                 try {
-                    root.postDelayed(this, 3000L);
+                    root.postDelayed(this, 2000L);
                 } catch (Throwable ignored) {
                     synchronized (ROOT_SCANS) {
                         ROOT_SCANS.remove(root);
@@ -324,7 +324,7 @@ public final class Mod extends App {
                         // scrolling is handled natively by ViewTreeObserver,
                         // avoiding evaluateJavascript + layout churn every 250 ms.
                         NativeVideoOverlay.update(webView);
-                        nextDelay = NativeVideoOverlay.hasOverlay(webView) ? 2500L : 800L;
+                        nextDelay = NativeVideoOverlay.isStable(webView) ? 900L : 450L;
                     } else {
                         NativeVideoOverlay.destroy(webView);
                         synchronized (ETOLAND_PREPARED_URL) {
@@ -332,7 +332,7 @@ public final class Mod extends App {
                         }
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V43 native video loop failed", t);
+                    Log.e(TAG, "V44 native video loop failed", t);
                 }
 
                 try {

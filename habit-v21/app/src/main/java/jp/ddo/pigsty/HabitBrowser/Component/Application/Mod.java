@@ -358,6 +358,10 @@ public final class Mod extends App {
                             }
 
                             if (!url.equals(prepared)) {
+                                // Never carry a native visual from the previous
+                                // same-domain document into a new Etoland page.
+                                NativeVideoOverlay.destroy(webView);
+
                                 try { webView.onResume(); } catch (Throwable ignored) {}
                                 try { webView.resumeTimers(); } catch (Throwable ignored) {}
 

@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V43 Java compatibility layer.
+ * V44 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -37,13 +37,15 @@ public final class Mod extends App {
             Collections.synchronizedMap(new WeakHashMap<WebView, String>());
     private static final Map<WebView, String> GUARDED_URL =
             Collections.synchronizedMap(new WeakHashMap<WebView, String>());
+    private static final Map<WebView, Long> LAST_GUARD_INSTALL =
+            Collections.synchronizedMap(new WeakHashMap<WebView, Long>());
 
     @Override
     public void onCreate() {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V43 frame-throttled video renderer initialized");
+        Log.i(TAG, "V44 in-WebView video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -101,7 +103,7 @@ public final class Mod extends App {
                 }
 
                 try {
-                    root.postDelayed(this, 3000L);
+                    root.postDelayed(this, 5000L);
                 } catch (Throwable ignored) {
                     synchronized (ROOT_SCANS) {
                         ROOT_SCANS.remove(root);
@@ -116,6 +118,7 @@ public final class Mod extends App {
 
         if (view instanceof WebView) {
             applyWebView((WebView) view);
+            return;
         }
 
         if (view instanceof ViewGroup) {
@@ -260,7 +263,7 @@ public final class Mod extends App {
 
         webView.postDelayed(new Runnable() {
             @Override public void run() {
-                long nextDelay = 2500L;
+                long nextDelay = 5000L;
 
                 try {
                     if (webView.getParent() == null || webView.getWindowToken() == null) {
@@ -269,70 +272,103 @@ public final class Mod extends App {
                         synchronized (CONFIGURED) { CONFIGURED.remove(webView); }
                         synchronized (ETOLAND_PREPARED_URL) { ETOLAND_PREPARED_URL.remove(webView); }
                         synchronized (GUARDED_URL) { GUARDED_URL.remove(webView); }
+                        synchronized (LAST_GUARD_INSTALL) { LAST_GUARD_INSTALL.remove(webView); }
                         return;
                     }
 
-                    RedirectGuard.install(webView);
+                    // Habit can keep several FastBack/tab WebViews alive. Do no
+                    // periodic JS/media work for a tab that is not currently
+                    // visible.
+                    boolean active =
+                            webView.isShown() &&
+                            webView.getVisibility() == View.VISIBLE &&
+                            webView.getWindowVisibility() == View.VISIBLE &&
+                            webView.getAlpha() > 0.01f;
 
-                    String url = webView.getUrl();
-
-                    String guarded;
-                    synchronized (GUARDED_URL) {
-                        guarded = GUARDED_URL.get(webView);
-                    }
-                    if (url != null && !url.equals(guarded)) {
-                        webView.evaluateJavascript(ANTI_HIJACK_JS, null);
-                        synchronized (GUARDED_URL) {
-                            GUARDED_URL.put(webView, url);
-                        }
-                    }
-
-                    if (url != null && url.contains("etoland.co.kr")) {
-                        String prepared;
-                        synchronized (ETOLAND_PREPARED_URL) {
-                            prepared = ETOLAND_PREPARED_URL.get(webView);
-                        }
-
-                        if (!url.equals(prepared)) {
-                            try { webView.onResume(); } catch (Throwable ignored) {}
-                            try { webView.resumeTimers(); } catch (Throwable ignored) {}
-
-                            WebSettings s = webView.getSettings();
-                            s.setJavaScriptEnabled(true);
-                            s.setDomStorageEnabled(true);
-                            s.setLoadsImagesAutomatically(true);
-                            s.setBlockNetworkImage(false);
-                            s.setBlockNetworkLoads(false);
-                            if (Build.VERSION.SDK_INT >= 21) {
-                                s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-                            }
-                            if (Build.VERSION.SDK_INT >= 17) {
-                                s.setMediaPlaybackRequiresUserGesture(false);
-                            }
-
-                            // Clear imported legacy/custom UA only when entering
-                            // a new Etoland document, not every polling tick.
-                            s.setUserAgentString(null);
-                            webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-
-                            synchronized (ETOLAND_PREPARED_URL) {
-                                ETOLAND_PREPARED_URL.put(webView, url);
-                            }
-                        }
-
-                        // V42 probes source/play state at low frequency. Smooth
-                        // scrolling is handled natively by ViewTreeObserver,
-                        // avoiding evaluateJavascript + layout churn every 250 ms.
-                        NativeVideoOverlay.update(webView);
-                        nextDelay = NativeVideoOverlay.hasOverlay(webView) ? 2500L : 800L;
+                    if (!active) {
+                        NativeVideoOverlay.hide(webView);
+                        nextDelay = 6000L;
                     } else {
-                        NativeVideoOverlay.destroy(webView);
-                        synchronized (ETOLAND_PREPARED_URL) {
-                            ETOLAND_PREPARED_URL.remove(webView);
+                        String url = webView.getUrl();
+                        long now = android.os.SystemClock.uptimeMillis();
+
+                        String guarded;
+                        synchronized (GUARDED_URL) {
+                            guarded = GUARDED_URL.get(webView);
+                        }
+
+                        Long lastInstall;
+                        synchronized (LAST_GUARD_INSTALL) {
+                            lastInstall = LAST_GUARD_INSTALL.get(webView);
+                        }
+
+                        boolean urlChanged =
+                                url != null && !url.equals(guarded);
+                        boolean guardRefresh =
+                                lastInstall == null || now - lastInstall.longValue() >= 15000L;
+
+                        if (urlChanged || guardRefresh) {
+                            RedirectGuard.install(webView);
+                            synchronized (LAST_GUARD_INSTALL) {
+                                LAST_GUARD_INSTALL.put(webView, Long.valueOf(now));
+                            }
+                        }
+
+                        if (urlChanged) {
+                            webView.evaluateJavascript(ANTI_HIJACK_JS, null);
+                            synchronized (GUARDED_URL) {
+                                GUARDED_URL.put(webView, url);
+                            }
+                        }
+
+                        if (url != null && url.contains("etoland.co.kr")) {
+                            String prepared;
+                            synchronized (ETOLAND_PREPARED_URL) {
+                                prepared = ETOLAND_PREPARED_URL.get(webView);
+                            }
+
+                            if (!url.equals(prepared)) {
+                                try { webView.onResume(); } catch (Throwable ignored) {}
+                                try { webView.resumeTimers(); } catch (Throwable ignored) {}
+
+                                WebSettings s = webView.getSettings();
+                                s.setJavaScriptEnabled(true);
+                                s.setDomStorageEnabled(true);
+                                s.setLoadsImagesAutomatically(true);
+                                s.setBlockNetworkImage(false);
+                                s.setBlockNetworkLoads(false);
+
+                                if (Build.VERSION.SDK_INT >= 21) {
+                                    s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                                }
+                                if (Build.VERSION.SDK_INT >= 17) {
+                                    s.setMediaPlaybackRequiresUserGesture(false);
+                                }
+
+                                s.setUserAgentString(null);
+                                webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
+                                synchronized (ETOLAND_PREPARED_URL) {
+                                    ETOLAND_PREPARED_URL.put(webView, url);
+                                }
+                            }
+
+                            // V44's visual is now a real WebView child. Scroll
+                            // motion requires no Java/JS tracking at all; this
+                            // probe only notices source/play-state changes.
+                            NativeVideoOverlay.update(webView);
+                            nextDelay =
+                                    NativeVideoOverlay.hasOverlay(webView) ? 1800L : 700L;
+                        } else {
+                            NativeVideoOverlay.destroy(webView);
+                            synchronized (ETOLAND_PREPARED_URL) {
+                                ETOLAND_PREPARED_URL.remove(webView);
+                            }
+                            nextDelay = 4000L;
                         }
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V43 native video loop failed", t);
+                    Log.e(TAG, "V44 native video loop failed", t);
                 }
 
                 try {

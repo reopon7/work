@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V44 Java compatibility layer.
+ * V45 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -47,7 +47,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V44 in-WebView video renderer initialized");
+        Log.i(TAG, "V45 core-WebView performance layer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -173,6 +173,16 @@ public final class Mod extends App {
             WebSettings settings = webView.getSettings();
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
+
+            // Legacy Habit 1.1.77 enables View drawing-cache and WebSettings
+            // smooth-transition modes intended for Android 4.x. On modern
+            // hardware-accelerated WebView these are obsolete and can make
+            // scrolling/compositing feel detached. Keep Chromium on the normal
+            // viewport-driven hardware path.
+            try { settings.setEnableSmoothTransition(false); } catch (Throwable ignored) {}
+            try { webView.setDrawingCacheEnabled(false); } catch (Throwable ignored) {}
+            try { webView.destroyDrawingCache(); } catch (Throwable ignored) {}
+            try { webView.setWillNotCacheDrawing(true); } catch (Throwable ignored) {}
 
             String ua = settings.getUserAgentString();
             if (isLegacyImportedUserAgent(ua)) {
@@ -402,7 +412,7 @@ public final class Mod extends App {
                         }
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "V44 native video loop failed", t);
+                    Log.e(TAG, "V45 native video loop failed", t);
                 }
 
                 try {

@@ -191,7 +191,8 @@ final class NativeVideoOverlay {
                 return;
             }
 
-            if (!updateChildLayout(webView, state)) {
+            if (!ensureAttached(webView, state) ||
+                !updateChildLayout(webView, state)) {
                 hide(webView);
                 return;
             }
@@ -286,6 +287,30 @@ final class NativeVideoOverlay {
         }
 
         return state;
+    }
+
+    private static boolean ensureAttached(WebView webView, State state) {
+        try {
+            if (state.container == null) return false;
+            if (state.container.getParent() == webView) return true;
+
+            if (state.container.getParent() instanceof ViewGroup) {
+                ((ViewGroup) state.container.getParent()).removeView(state.container);
+            }
+
+            webView.addView(
+                    state.container,
+                    new AbsoluteLayout.LayoutParams(
+                            Math.max(1, state.layoutWidth),
+                            Math.max(1, state.layoutHeight),
+                            state.layoutX == Integer.MIN_VALUE ? 0 : state.layoutX,
+                            state.layoutY == Integer.MIN_VALUE ? 0 : state.layoutY));
+
+            return true;
+        } catch (Throwable t) {
+            Log.e(TAG, "failed to reattach in-WebView video child", t);
+            return false;
+        }
     }
 
     /**

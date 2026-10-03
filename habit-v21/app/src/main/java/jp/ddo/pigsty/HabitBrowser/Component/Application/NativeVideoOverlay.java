@@ -8,13 +8,13 @@ import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
-import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewGroupOverlay;
 import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.webkit.CookieManager;
@@ -28,33 +28,36 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V43 smooth passive Etoland video visualizer.
+ * V44 Etoland native video renderer.
  *
- * Performance model:
- * - JavaScript probes source/play state only at low frequency.
- * - Scroll geometry is handled on the native UI thread.
- * - Scroll callbacks are coalesced to at most one positioning update per frame.
- * - Expensive screen-coordinate queries are cached until layout/probe changes.
- * - During an active fling no MediaPlayer position query/seek is performed.
+ * Unlike V38-V43, the native TextureView is no longer attached to the Activity
+ * root. It lives in the WebView's own ViewGroupOverlay coordinate space.
+ * That makes clipping, tab visibility and page-relative movement naturally
+ * follow the WebView instead of simulating those relationships at Activity
+ * level.
  */
 final class NativeVideoOverlay {
-    private static final String TAG = "HabitNativeTexture";
+    private static final String TAG = "HabitNativeV44";
 
     private static final WeakHashMap<WebView, State> STATES =
             new WeakHashMap<WebView, State>();
 
     private NativeVideoOverlay() {}
 
-    static synchronized boolean hasOverlay(WebView webView) {
+    static synchronized boolean isStable(WebView webView) {
         State state = STATES.get(webView);
-        return state != null && state.src != null && state.src.length() > 0;
+        return state != null &&
+               state.src != null &&
+               state.src.length() > 0 &&
+               state.prepared &&
+               state.nativeOwned;
     }
 
     static synchronized void update(final WebView webView) {
-        if (webView == null || Build.VERSION.SDK_INT < 19) return;
+        if (webView == null || Build.VERSION.SDK_INT < 21) return;
 
         if (!isEligible(webView)) {
-            destroy(webView);
+            hide(webView);
             return;
         }
 
@@ -71,7 +74,7 @@ final class NativeVideoOverlay {
                         expectedUrl == null ||
                         currentUrl == null ||
                         !expectedUrl.equals(currentUrl)) {
-                        destroy(webView);
+                        hide(webView);
                         return;
                     }
 
@@ -80,7 +83,7 @@ final class NativeVideoOverlay {
             });
         } catch (Throwable t) {
             Log.e(TAG, "probe failed", t);
-            destroy(webView);
+            hide(webView);
         }
     }
 
@@ -88,7 +91,7 @@ final class NativeVideoOverlay {
         State state = STATES.get(webView);
         if (state == null) return;
 
-        pauseVisual(state);
+        pauseNative(state);
 
         if (state.container != null) {
             state.container.setVisibility(View.GONE);
@@ -125,18 +128,22 @@ final class NativeVideoOverlay {
             }
         } catch (Throwable ignored) {}
 
-        releasePlayer(state);
-
+        // Restore the HTML video only while the same document is still alive.
         try {
-            if (state.surface != null) {
-                state.surface.release();
-                state.surface = null;
+            String current = webView.getUrl();
+            if (state.nativeOwned &&
+                current != null &&
+                current.equals(state.pageUrl) &&
+                webView.getWindowToken() != null) {
+                webView.evaluateJavascript(RESTORE_JS, null);
             }
         } catch (Throwable ignored) {}
 
+        releasePlayer(state);
+
         try {
-            if (state.container != null && state.container.getParent() instanceof ViewGroup) {
-                ((ViewGroup) state.container.getParent()).removeView(state.container);
+            if (state.hostOverlay != null && state.container != null) {
+                state.hostOverlay.remove(state.container);
             }
         } catch (Throwable ignored) {}
     }
@@ -155,7 +162,7 @@ final class NativeVideoOverlay {
     private static void applyProbe(WebView webView, String value) {
         try {
             if (!isEligible(webView)) {
-                destroy(webView);
+                hide(webView);
                 return;
             }
 
@@ -192,7 +199,11 @@ final class NativeVideoOverlay {
             state.viewportWidthCss = o.optDouble("viewportWidth", 0.0);
             state.pendingSeekMs =
                     Math.max(0, (int) Math.round(o.optDouble("currentTime", 0.0) * 1000.0));
-            state.pendingAutoplay = !o.optBoolean("paused", true);
+
+            boolean ownedByJs = o.optBoolean("owned", false);
+            state.pendingPlay = ownedByJs
+                    ? o.optBoolean("wanted", true)
+                    : !o.optBoolean("paused", true);
             state.pendingLoop = o.optBoolean("loop", false);
 
             if (state.widthCss < 2.0 ||
@@ -202,27 +213,24 @@ final class NativeVideoOverlay {
                 return;
             }
 
-            if (!refreshGeometryCache(webView, state)) {
-                hide(webView);
-                return;
-            }
+            refreshGeometry(webView, state);
 
             if (!src.equals(state.src)) {
                 state.src = src;
                 state.prepared = false;
+                state.nativeOwned = false;
                 openPlayerIfReady(state);
-            } else if (state.prepared && state.player != null) {
-                syncPlayer(state, false);
+            } else if (state.prepared) {
+                applyNativePlayState(state);
             }
 
-            if (!applyPositionFast(webView, state)) {
+            if (!applyPosition(webView, state)) {
                 hide(webView);
                 return;
             }
 
-            if (!isEligible(webView)) {
-                destroy(webView);
-                return;
+            if (state.prepared && !state.nativeOwned) {
+                requestOwnership(webView, state);
             }
 
             showVisual(state);
@@ -231,21 +239,23 @@ final class NativeVideoOverlay {
         }
     }
 
-    private static State createState(Activity activity, final WebView webView) {
-        View content = activity.findViewById(android.R.id.content);
-        if (!(content instanceof ViewGroup)) return null;
+    private static State createState(
+            Activity activity,
+            final WebView webView) {
 
-        final ViewGroup root = (ViewGroup) content;
         final State state = new State();
         state.activity = activity;
         state.webView = webView;
-        state.root = root;
+        state.hostOverlay = webView.getOverlay();
 
-        PassthroughFrameLayout container = new PassthroughFrameLayout(activity);
+        final PassthroughFrameLayout container =
+                new PassthroughFrameLayout(activity);
         container.setBackgroundColor(0xff000000);
         container.setVisibility(View.GONE);
         container.setClipChildren(true);
         container.setClipToPadding(true);
+        container.setClickable(false);
+        container.setFocusable(false);
 
         final TextureView texture = new TextureView(activity);
         texture.setOpaque(true);
@@ -256,6 +266,13 @@ final class NativeVideoOverlay {
 
         state.container = container;
         state.texture = texture;
+
+        try {
+            state.hostOverlay.add(container);
+        } catch (Throwable t) {
+            Log.e(TAG, "WebView overlay add failed", t);
+            return null;
+        }
 
         texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
@@ -292,8 +309,6 @@ final class NativeVideoOverlay {
             }
         });
 
-        root.addView(container, new ViewGroup.LayoutParams(1, 1));
-
         state.positionRunnable = new Runnable() {
             @Override
             public void run() {
@@ -304,25 +319,24 @@ final class NativeVideoOverlay {
                     return;
                 }
 
-                if (!applyPositionFast(webView, state)) {
+                if (applyPosition(webView, state)) {
+                    showVisual(state);
+                } else {
                     hide(webView);
-                    return;
                 }
-
-                showVisual(state);
             }
         };
 
         state.scrollListener = new ViewTreeObserver.OnScrollChangedListener() {
             @Override
             public void onScrollChanged() {
-                state.lastScrollMs = SystemClock.uptimeMillis();
                 schedulePosition(webView, state);
             }
         };
 
         try {
-            webView.getViewTreeObserver().addOnScrollChangedListener(state.scrollListener);
+            webView.getViewTreeObserver()
+                    .addOnScrollChangedListener(state.scrollListener);
         } catch (Throwable t) {
             Log.e(TAG, "scroll listener install failed", t);
         }
@@ -333,9 +347,8 @@ final class NativeVideoOverlay {
                     View v,
                     int left, int top, int right, int bottom,
                     int oldLeft, int oldTop, int oldRight, int oldBottom) {
-                if (refreshGeometryCache(webView, state)) {
-                    schedulePosition(webView, state);
-                }
+                refreshGeometry(webView, state);
+                schedulePosition(webView, state);
             }
         };
         webView.addOnLayoutChangeListener(state.layoutListener);
@@ -354,140 +367,129 @@ final class NativeVideoOverlay {
         }
     }
 
-    /**
-     * Expensive coordinate queries are performed only on probe/layout changes,
-     * never for every scroll callback.
-     */
-    private static boolean refreshGeometryCache(WebView webView, State state) {
-        try {
-            if (state.viewportWidthCss < 1.0 ||
-                state.widthCss < 2.0 ||
-                state.heightCss < 2.0) {
-                return false;
-            }
-
-            int[] webLoc = new int[2];
-            int[] rootLoc = new int[2];
-            webView.getLocationOnScreen(webLoc);
-            state.root.getLocationOnScreen(rootLoc);
-
-            Rect visibleScreen = new Rect();
-            if (!webView.getGlobalVisibleRect(visibleScreen)) return false;
-
-            double scale = ((double) webView.getWidth()) / state.viewportWidthCss;
-
-            state.baseLeft =
-                    webLoc[0] - rootLoc[0] +
-                    (int) Math.round(state.docLeftCss * scale);
-            state.baseTop =
-                    webLoc[1] - rootLoc[1] +
-                    (int) Math.round(state.docTopCss * scale);
-            state.fullWidth = Math.max(2, (int) Math.round(state.widthCss * scale));
-            state.fullHeight = Math.max(2, (int) Math.round(state.heightCss * scale));
-
-            state.visibleLeft = visibleScreen.left - rootLoc[0];
-            state.visibleTop = visibleScreen.top - rootLoc[1];
-            state.visibleRight = visibleScreen.right - rootLoc[0];
-            state.visibleBottom = visibleScreen.bottom - rootLoc[1];
-
-            if (state.layoutWidth != state.fullWidth ||
-                state.layoutHeight != state.fullHeight) {
-                ViewGroup.LayoutParams lp = state.container.getLayoutParams();
-                lp.width = state.fullWidth;
-                lp.height = state.fullHeight;
-                state.container.setLayoutParams(lp);
-                state.layoutWidth = state.fullWidth;
-                state.layoutHeight = state.fullHeight;
-                applyTextureAspect(state);
-            }
-
-            state.geometryValid = true;
-            return true;
-        } catch (Throwable t) {
-            state.geometryValid = false;
-            Log.e(TAG, "refresh geometry failed", t);
-            return false;
+    private static void refreshGeometry(WebView webView, State state) {
+        if (state == null ||
+            state.viewportWidthCss < 1.0 ||
+            state.widthCss < 2.0 ||
+            state.heightCss < 2.0) {
+            return;
         }
+
+        double scale = ((double) webView.getWidth()) / state.viewportWidthCss;
+
+        state.baseLeft =
+                (int) Math.round(state.docLeftCss * scale);
+        state.baseTop =
+                (int) Math.round(state.docTopCss * scale);
+        state.fullWidth =
+                Math.max(2, (int) Math.round(state.widthCss * scale));
+        state.fullHeight =
+                Math.max(2, (int) Math.round(state.heightCss * scale));
+
+        if (state.layoutWidth != state.fullWidth ||
+            state.layoutHeight != state.fullHeight) {
+            layoutExact(state.container, 0, 0, state.fullWidth, state.fullHeight);
+            state.layoutWidth = state.fullWidth;
+            state.layoutHeight = state.fullHeight;
+            applyTextureAspect(state);
+        }
+
+        state.geometryValid = true;
     }
 
     /**
-     * Scroll hot-path: integer math + translation + optional clip update only.
+     * WebView-overlay coordinates: no Activity-root coordinate conversion and
+     * no clipBounds updates. The WebView itself clips its ViewGroupOverlay.
      */
-    private static boolean applyPositionFast(WebView webView, State state) {
+    private static boolean applyPosition(WebView webView, State state) {
         if (!state.geometryValid) return false;
 
-        int fullLeft = state.baseLeft - webView.getScrollX();
-        int fullTop = state.baseTop - webView.getScrollY();
+        int left = state.baseLeft - webView.getScrollX();
+        int top = state.baseTop - webView.getScrollY();
 
-        int localClipLeft = Math.max(0, state.visibleLeft - fullLeft);
-        int localClipTop = Math.max(0, state.visibleTop - fullTop);
-        int localClipRight = Math.min(state.fullWidth, state.visibleRight - fullLeft);
-        int localClipBottom = Math.min(state.fullHeight, state.visibleBottom - fullTop);
+        int right = left + state.fullWidth;
+        int bottom = top + state.fullHeight;
 
-        if (localClipRight - localClipLeft < 2 ||
-            localClipBottom - localClipTop < 2) {
+        if (right <= 0 ||
+            bottom <= 0 ||
+            left >= webView.getWidth() ||
+            top >= webView.getHeight()) {
             return false;
         }
 
-        if (state.lastLeft != fullLeft) {
-            state.container.setTranslationX(fullLeft);
-            state.lastLeft = fullLeft;
+        if (state.lastLeft != left) {
+            state.container.setTranslationX(left);
+            state.lastLeft = left;
         }
 
-        if (state.lastTop != fullTop) {
-            state.container.setTranslationY(fullTop);
-            state.lastTop = fullTop;
-        }
-
-        // For the common case (video fully within the WebView viewport), avoid
-        // allocating/updating clip bounds at all.
-        boolean fullVisible =
-                localClipLeft == 0 &&
-                localClipTop == 0 &&
-                localClipRight == state.fullWidth &&
-                localClipBottom == state.fullHeight;
-
-        if (fullVisible) {
-            if (state.clipActive) {
-                state.container.setClipBounds(null);
-                state.clipActive = false;
-            }
-        } else if (!state.clipActive ||
-                   state.clipLeft != localClipLeft ||
-                   state.clipTop != localClipTop ||
-                   state.clipRight != localClipRight ||
-                   state.clipBottom != localClipBottom) {
-            state.container.setClipBounds(
-                    new Rect(localClipLeft, localClipTop, localClipRight, localClipBottom));
-            state.clipActive = true;
-            state.clipLeft = localClipLeft;
-            state.clipTop = localClipTop;
-            state.clipRight = localClipRight;
-            state.clipBottom = localClipBottom;
+        if (state.lastTop != top) {
+            state.container.setTranslationY(top);
+            state.lastTop = top;
         }
 
         return true;
     }
 
-    private static void showVisual(State state) {
-        if (state == null || state.container == null) return;
+    private static void requestOwnership(
+            final WebView webView,
+            final State state) {
 
-        if (!state.visible) {
-            state.container.setVisibility(View.VISIBLE);
-            state.container.bringToFront();
-            state.visible = true;
-        }
+        if (state.ownershipPending || state.nativeOwned) return;
+        state.ownershipPending = true;
 
-        if (state.prepared && state.pendingAutoplay) {
-            try {
-                if (!state.player.isPlaying()) state.player.start();
-            } catch (Throwable ignored) {}
+        try {
+            webView.evaluateJavascript(TAKE_OWNERSHIP_JS,
+                    new ValueCallback<String>() {
+                @Override
+                public void onReceiveValue(String value) {
+                    state.ownershipPending = false;
+
+                    if (value == null ||
+                        "null".equals(value) ||
+                        "undefined".equals(value)) {
+                        return;
+                    }
+
+                    try {
+                        JSONObject o = new JSONObject(value);
+                        String src = o.optString("src", "");
+                        if (!src.equals(state.src)) return;
+
+                        state.pendingSeekMs =
+                                Math.max(0, (int) Math.round(
+                                        o.optDouble("currentTime", 0.0) * 1000.0));
+                        state.pendingPlay =
+                                o.optBoolean("wanted", state.pendingPlay);
+                        state.nativeOwned = true;
+
+                        if (state.player != null && state.prepared) {
+                            try {
+                                state.player.seekTo(state.pendingSeekMs);
+                            } catch (Throwable ignored) {}
+                            try {
+                                state.player.setVolume(1.0f, 1.0f);
+                            } catch (Throwable ignored) {}
+                            applyNativePlayState(state);
+                        }
+                    } catch (Throwable t) {
+                        Log.e(TAG, "ownership result failed: " + value, t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            state.ownershipPending = false;
+            Log.e(TAG, "ownership request failed", t);
         }
     }
 
     private static void openPlayerIfReady(final State state) {
-        if (state == null || state.src == null || state.src.length() == 0) return;
-        if (state.surface == null || !state.surface.isValid()) return;
+        if (state == null ||
+            state.src == null ||
+            state.src.length() == 0 ||
+            state.surface == null ||
+            !state.surface.isValid()) {
+            return;
+        }
 
         releasePlayer(state);
 
@@ -501,45 +503,67 @@ final class NativeVideoOverlay {
                 headers.put("Referer", state.pageUrl);
             }
             try {
-                String cookie = CookieManager.getInstance().getCookie(state.src);
+                String cookie =
+                        CookieManager.getInstance().getCookie(state.src);
                 if (cookie != null && cookie.length() > 0) {
                     headers.put("Cookie", cookie);
                 }
             } catch (Throwable ignored) {}
 
             mp.setSurface(state.surface);
+
+            // Before JS ownership succeeds, stay muted so the original HTML
+            // video remains a safe fallback without double audio.
             mp.setVolume(0.0f, 0.0f);
             mp.setLooping(state.pendingLoop);
             mp.setDataSource(state.activity, Uri.parse(state.src), headers);
 
-            mp.setOnVideoSizeChangedListener(new MediaPlayer.OnVideoSizeChangedListener() {
+            mp.setOnVideoSizeChangedListener(
+                    new MediaPlayer.OnVideoSizeChangedListener() {
                 @Override
-                public void onVideoSizeChanged(MediaPlayer player, int width, int height) {
+                public void onVideoSizeChanged(
+                        MediaPlayer player, int width, int height) {
                     state.videoWidth = width;
                     state.videoHeight = height;
                     applyTextureAspect(state);
                 }
             });
 
-            mp.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            mp.setOnPreparedListener(
+                    new MediaPlayer.OnPreparedListener() {
                 @Override
                 public void onPrepared(MediaPlayer player) {
                     if (state.player != player) return;
+
                     state.prepared = true;
                     state.videoWidth = player.getVideoWidth();
                     state.videoHeight = player.getVideoHeight();
                     applyTextureAspect(state);
-                    try { player.setVolume(0.0f, 0.0f); } catch (Throwable ignored) {}
-                    try { player.setLooping(state.pendingLoop); } catch (Throwable ignored) {}
-                    syncPlayer(state, true);
+
+                    try { player.seekTo(state.pendingSeekMs); }
+                    catch (Throwable ignored) {}
+
+                    if (state.nativeOwned) {
+                        try { player.setVolume(1.0f, 1.0f); }
+                        catch (Throwable ignored) {}
+                        applyNativePlayState(state);
+                    }
+
+                    WebView webView = state.webView;
+                    if (webView != null &&
+                        isEligible(webView) &&
+                        !state.nativeOwned) {
+                        requestOwnership(webView, state);
+                    }
                 }
             });
 
             mp.setOnErrorListener(new MediaPlayer.OnErrorListener() {
                 @Override
-                public boolean onError(MediaPlayer player, int what, int extra) {
+                public boolean onError(
+                        MediaPlayer player, int what, int extra) {
                     Log.e(TAG,
-                            "native texture error what=" + what +
+                            "native player error what=" + what +
                             " extra=" + extra +
                             " src=" + state.src);
                     return false;
@@ -548,31 +572,20 @@ final class NativeVideoOverlay {
 
             mp.prepareAsync();
         } catch (Throwable t) {
-            Log.e(TAG, "open native texture player failed: " + state.src, t);
+            Log.e(TAG, "open native player failed: " + state.src, t);
             releasePlayer(state);
         }
     }
 
-    private static void syncPlayer(State state, boolean forceSeek) {
+    private static void applyNativePlayState(State state) {
         MediaPlayer mp = state.player;
-        if (mp == null || !state.prepared) return;
+        if (mp == null || !state.prepared || !state.nativeOwned) return;
 
         try {
-            long now = SystemClock.uptimeMillis();
+            mp.setLooping(state.pendingLoop);
+            mp.setVolume(1.0f, 1.0f);
 
-            // Never query/seek MediaPlayer while the user is actively scrolling.
-            boolean scrolling = now - state.lastScrollMs < 500L;
-
-            if (!scrolling &&
-                (forceSeek || now - state.lastDriftSyncMs >= 5000L)) {
-                int actual = mp.getCurrentPosition();
-                if (forceSeek || Math.abs(actual - state.pendingSeekMs) > 4000) {
-                    mp.seekTo(state.pendingSeekMs);
-                }
-                state.lastDriftSyncMs = now;
-            }
-
-            if (state.pendingAutoplay) {
+            if (state.pendingPlay) {
                 if (!mp.isPlaying()) mp.start();
             } else {
                 if (mp.isPlaying()) mp.pause();
@@ -580,7 +593,7 @@ final class NativeVideoOverlay {
         } catch (Throwable ignored) {}
     }
 
-    private static void pauseVisual(State state) {
+    private static void pauseNative(State state) {
         try {
             if (state != null &&
                 state.player != null &&
@@ -593,9 +606,11 @@ final class NativeVideoOverlay {
 
     private static void releasePlayer(State state) {
         if (state == null) return;
+
         MediaPlayer old = state.player;
         state.player = null;
         state.prepared = false;
+
         if (old == null) return;
 
         try { old.setSurface(null); } catch (Throwable ignored) {}
@@ -619,40 +634,65 @@ final class NativeVideoOverlay {
         int top = 0;
 
         if (state.videoWidth > 0 && state.videoHeight > 0) {
-            double videoAspect = (double) state.videoWidth / (double) state.videoHeight;
-            double boxAspect = (double) boxW / (double) boxH;
+            double videoAspect =
+                    (double) state.videoWidth / (double) state.videoHeight;
+            double boxAspect =
+                    (double) boxW / (double) boxH;
 
             if (videoAspect > boxAspect) {
                 texW = boxW;
-                texH = Math.max(2, (int) Math.round(boxW / videoAspect));
+                texH = Math.max(
+                        2,
+                        (int) Math.round(boxW / videoAspect));
                 top = (boxH - texH) / 2;
             } else {
                 texH = boxH;
-                texW = Math.max(2, (int) Math.round(boxH * videoAspect));
+                texW = Math.max(
+                        2,
+                        (int) Math.round(boxH * videoAspect));
                 left = (boxW - texW) / 2;
             }
         }
 
-        ViewGroup.LayoutParams raw = state.texture.getLayoutParams();
-        FrameLayout.LayoutParams lp;
-        if (raw instanceof FrameLayout.LayoutParams) {
-            lp = (FrameLayout.LayoutParams) raw;
-        } else {
-            lp = new FrameLayout.LayoutParams(texW, texH);
-        }
-
-        if (lp.width == texW &&
-            lp.height == texH &&
-            lp.leftMargin == left &&
-            lp.topMargin == top) {
+        if (state.textureWidth == texW &&
+            state.textureHeight == texH &&
+            state.textureLeft == left &&
+            state.textureTop == top) {
             return;
         }
 
-        lp.width = texW;
-        lp.height = texH;
-        lp.leftMargin = left;
-        lp.topMargin = top;
-        state.texture.setLayoutParams(lp);
+        layoutExact(
+                state.texture,
+                left,
+                top,
+                left + texW,
+                top + texH);
+
+        state.textureWidth = texW;
+        state.textureHeight = texH;
+        state.textureLeft = left;
+        state.textureTop = top;
+    }
+
+    private static void layoutExact(
+            View view,
+            int left,
+            int top,
+            int right,
+            int bottom) {
+
+        int width = Math.max(1, right - left);
+        int height = Math.max(1, bottom - top);
+
+        view.measure(
+                View.MeasureSpec.makeMeasureSpec(
+                        width,
+                        View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(
+                        height,
+                        View.MeasureSpec.EXACTLY));
+
+        view.layout(left, top, right, bottom);
     }
 
     private static boolean isEligible(WebView webView) {
@@ -667,13 +707,7 @@ final class NativeVideoOverlay {
             if (webView.getWidth() < 2 || webView.getHeight() < 2) return false;
 
             String url = webView.getUrl();
-            if (url == null || !url.contains("etoland.co.kr")) return false;
-
-            Rect visible = new Rect();
-            if (!webView.getGlobalVisibleRect(visible)) return false;
-            if (visible.width() < 2 || visible.height() < 2) return false;
-
-            return true;
+            return url != null && url.contains("etoland.co.kr");
         } catch (Throwable ignored) {
             return false;
         }
@@ -700,6 +734,12 @@ final class NativeVideoOverlay {
             "  if(area>bestArea&&(v.currentSrc||v.src)){best=v;bestArea=area;}" +
             " }" +
             " if(!best)return null;" +
+            " if(best.__hbNativeOwned && !best.paused){" +
+            "  best.__hbNativeWanted=true;" +
+            "  best.__hbNativeSelfPause=true;" +
+            "  try{HTMLMediaElement.prototype.pause.call(best);}catch(e){}" +
+            "  best.__hbNativeSelfPause=false;" +
+            " }" +
             " var r=best.getBoundingClientRect();" +
             " return {" +
             "  src:String(best.currentSrc||best.src||'')," +
@@ -708,9 +748,63 @@ final class NativeVideoOverlay {
             "  width:r.width,height:r.height," +
             "  viewportWidth:innerWidth,viewportHeight:innerHeight," +
             "  currentTime:Number(best.currentTime||0)," +
-            "  paused:!!best.paused,loop:!!best.loop" +
+            "  paused:!!best.paused,loop:!!best.loop," +
+            "  owned:!!best.__hbNativeOwned," +
+            "  wanted:best.__hbNativeOwned?!!best.__hbNativeWanted:!best.paused" +
             " };" +
             "}catch(e){return null;}" +
+            "})();";
+
+    private static final String TAKE_OWNERSHIP_JS =
+            "(function(){" +
+            "try{" +
+            " var a=document.getElementsByTagName('video'),best=null,bestArea=0;" +
+            " for(var i=0;i<a.length;i++){" +
+            "  var v=a[i],r=v.getBoundingClientRect();" +
+            "  var w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));" +
+            "  var h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));" +
+            "  var area=w*h;" +
+            "  if(area>bestArea&&(v.currentSrc||v.src)){best=v;bestArea=area;}" +
+            " }" +
+            " if(!best)return null;" +
+            " if(!best.__hbNativeOwned){" +
+            "  best.__hbNativeOwned=true;" +
+            "  best.__hbNativeWanted=!best.paused;" +
+            "  best.__hbNativeOldMuted=best.muted;" +
+            "  best.__hbNativeOldControls=best.controls;" +
+            "  best.__hbNativeOldOpacity=best.style.opacity||'';" +
+            "  best.__hbNativeSelfPause=true;" +
+            "  try{HTMLMediaElement.prototype.pause.call(best);}catch(e){}" +
+            "  best.__hbNativeSelfPause=false;" +
+            "  best.muted=true;" +
+            "  best.controls=false;" +
+            "  best.style.opacity='0.001';" +
+            "  best.addEventListener('click',function(e){" +
+            "   if(!best.__hbNativeOwned)return;" +
+            "   best.__hbNativeWanted=!best.__hbNativeWanted;" +
+            "   e.preventDefault();e.stopPropagation();" +
+            "  },true);" +
+            " }" +
+            " return {" +
+            "  src:String(best.currentSrc||best.src||'')," +
+            "  currentTime:Number(best.currentTime||0)," +
+            "  wanted:!!best.__hbNativeWanted" +
+            " };" +
+            "}catch(e){return null;}" +
+            "})();";
+
+    private static final String RESTORE_JS =
+            "(function(){" +
+            "try{" +
+            " var a=document.getElementsByTagName('video');" +
+            " for(var i=0;i<a.length;i++){" +
+            "  var v=a[i];if(!v.__hbNativeOwned)continue;" +
+            "  v.__hbNativeOwned=false;" +
+            "  try{v.muted=!!v.__hbNativeOldMuted;}catch(e){}" +
+            "  try{v.controls=!!v.__hbNativeOldControls;}catch(e){}" +
+            "  try{v.style.opacity=v.__hbNativeOldOpacity||'';}catch(e){}" +
+            " }" +
+            "}catch(e){}" +
             "})();";
 
     private static final class PassthroughFrameLayout extends FrameLayout {
@@ -734,7 +828,7 @@ final class NativeVideoOverlay {
     private static final class State {
         Activity activity;
         WebView webView;
-        ViewGroup root;
+        ViewGroupOverlay hostOverlay;
         PassthroughFrameLayout container;
         TextureView texture;
         Surface surface;
@@ -748,16 +842,15 @@ final class NativeVideoOverlay {
         String pageUrl = "";
 
         boolean prepared;
-        boolean pendingAutoplay;
+        boolean nativeOwned;
+        boolean ownershipPending;
+        boolean pendingPlay;
         boolean pendingLoop;
         boolean visible;
         boolean positionPosted;
         boolean geometryValid;
-        boolean clipActive;
 
         int pendingSeekMs;
-        long lastDriftSyncMs;
-        long lastScrollMs;
 
         double docLeftCss;
         double docTopCss;
@@ -772,19 +865,15 @@ final class NativeVideoOverlay {
         int baseTop;
         int fullWidth;
         int fullHeight;
-        int visibleLeft;
-        int visibleTop;
-        int visibleRight;
-        int visibleBottom;
 
         int layoutWidth = -1;
         int layoutHeight = -1;
         int lastLeft = Integer.MIN_VALUE;
         int lastTop = Integer.MIN_VALUE;
 
-        int clipLeft = Integer.MIN_VALUE;
-        int clipTop = Integer.MIN_VALUE;
-        int clipRight = Integer.MIN_VALUE;
-        int clipBottom = Integer.MIN_VALUE;
+        int textureWidth = -1;
+        int textureHeight = -1;
+        int textureLeft = Integer.MIN_VALUE;
+        int textureTop = Integer.MIN_VALUE;
     }
 }

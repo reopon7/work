@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * V43 Java compatibility layer.
+ * V44 Java compatibility layer.
  *
  * Legacy HabitBrowser classes.dex remains untouched.
  * This class is compiled from Java and added as classes2.dex.
@@ -43,7 +43,7 @@ public final class Mod extends App {
         super.onCreate();
         sanitizeLegacyPreferences(false);
         registerActivityLifecycleCallbacks(new CompatCallbacks());
-        Log.i(TAG, "V43 frame-throttled video renderer initialized");
+        Log.i(TAG, "V44 fullscreen-landscape video renderer initialized");
     }
 
     private static final class CompatCallbacks implements Application.ActivityLifecycleCallbacks {
@@ -201,6 +201,12 @@ public final class Mod extends App {
         changed |= ensureBooleanPreference("conf_contents_force_draw", false);
         changed |= ensureBooleanPreference("conf_content_old_video_replace", false);
 
+        // Legacy BrowserActivity.showCustomView() already supports four movie
+        // orientation modes. Value 1 maps to SCREEN_ORIENTATION_LANDSCAPE (0).
+        // Force this so HTML5 video fullscreen always rotates to landscape,
+        // even when the phone/browser itself is currently portrait.
+        changed |= ensureIntPreference("conf_ui_fullscreen_movie_orientation", 1);
+
         if (changed && refreshRuntimeConfig) {
             refreshLegacyConfig();
         }
@@ -216,6 +222,20 @@ public final class Mod extends App {
             }
         } catch (Throwable t) {
             Log.e(TAG, "Preference sanitize failed: " + key, t);
+        }
+        return false;
+    }
+
+    private static boolean ensureIntPreference(String key, int wanted) {
+        try {
+            int current = App.getPreferenceInt(key, wanted);
+            if (current != wanted) {
+                App.setPreferenceInt(key, wanted);
+                Log.i(TAG, "Sanitized imported preference: " + key + "=" + wanted);
+                return true;
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "Integer preference sanitize failed: " + key, t);
         }
         return false;
     }

@@ -430,6 +430,19 @@ final class NativeVideoOverlay {
         return true;
     }
 
+    private static void showVisual(State state) {
+        if (state == null || state.container == null) return;
+
+        if (!state.visible) {
+            state.container.setVisibility(View.VISIBLE);
+            state.visible = true;
+        }
+
+        if (state.prepared && state.nativeOwned) {
+            applyNativePlayState(state);
+        }
+    }
+
     private static void requestOwnership(
             final WebView webView,
             final State state) {
